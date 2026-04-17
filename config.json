@@ -1,17 +1,4 @@
 {
-  "whitelist": [
-    "netflix.com",
-    "youtube.com",
-    "github.com",
-    "openai.com",
-    "anthropic.com",
-    "twitch.tv",
-    "chatgpt.com",
-    "accounts.youtube.com"
-  ],
-  "ping_interval_seconds": 1800,
-  "active_check_interval_seconds": 120,
-  "top_n_to_ping": 10,
-  "dns_servers": ["8.8.8.8", "1.1.1.1"],
-  "dns_timeout": 5
+  "list_url": "https://gist.githubusercontent.com/iamwildtuna/7772b7c84a11bf6e1385f23096a73a15/raw/gistfile2.txt",
+  "refresh_interval_hours": 24
 }
