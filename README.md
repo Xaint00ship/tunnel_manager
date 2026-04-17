@@ -1,6 +1,6 @@
 # VPN Split Tunnel Manager
 
-Automatically routes only a curated list of IPs/subnets through your IKEv2 VPN — everything else goes direct. No browser extensions, no proxy, no configuration on the VPN server side.
+Routes only a curated list of IPs/subnets through your VPN — everything else goes direct via the ISP. No browser extensions, no proxy, no configuration on the VPN server side.
 
 ```
 Curated IP list (Netflix, YouTube, ...)  ──►  VPN tunnel  ──►  your VPN server
@@ -9,27 +9,27 @@ Everything else                           ──►  direct ISP connection
 
 ## How it works
 
-When you connect IKEv2 VPN on macOS or Windows, the OS adds a catch-all default route that sends **all** traffic through the tunnel. This tool:
+When you connect a VPN (IKEv2, WireGuard, OpenVPN, L2TP, …), the OS typically adds a catch-all default route that sends **all** traffic through the tunnel. This tool:
 
-1. Detects the VPN interface (`ipsec0` on macOS, `utun*`, `ppp*`, `xfrm*`, or the IKEv2 adapter on Windows)
-2. Removes the catch-all VPN default route
-3. Restores the local ISP default route
-4. Downloads a curated list of IPs/CIDRs and adds per-entry routes through the VPN
-5. Keeps the list fresh and watches for VPN reconnects
+1. Detects the VPN interface by scanning `0.0.0.0/0` routes (IKEv2 `ipsec*`, `utun*`, `wg*`, `tun*`, `tap*`, `xfrm*`, `ppp*`, RAS adapters on Windows).
+2. Loads a curated IP/CIDR list **first** (from a local file or URL with optional SHA-256 pinning) so a failed fetch never leaves you offline.
+3. Removes the catch-all VPN default route, keeping the ISP default.
+4. Diffs desired routes against what's already on the VPN interface + last-run state, then adds new routes / removes stale ones in batched platform-native calls.
+5. Background workers refresh the list on a schedule and rebuild the tunnel on VPN reconnect.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Startup                                                 │
-│  detect VPN interface → remove default VPN route         │
-│  restore ISP default → fetch list → add routes           │
+│  detect VPN → load+parse list → remove VPN default       │
+│  diff vs. state+live → batch add new / remove stale      │
+│  persist state to ~/.tunnel_manager/state.json           │
 └──────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────┬──────────────────────────────┐
-│  worker_refresh (24 h)  │  worker_vpn_watchdog (15 s)  │
-│  Re-fetch list,         │  Detect VPN reconnect →      │
-│  flush + re-apply       │  rebuild tunnel              │
-│  routes.                │  automatically.              │
+│  worker_refresh (24h)   │  worker_watchdog (15s)       │
+│  Re-load list, diff-    │  VPN reconnect → rebuild.    │
+│  apply changes only.    │  VPN gone → pause refresh.   │
 └─────────────────────────┴──────────────────────────────┘
 ```
 
@@ -37,127 +37,119 @@ When you connect IKEv2 VPN on macOS or Windows, the OS adds a catch-all default 
 
 - Python 3.11+
 - macOS, Windows, or Linux
-- IKEv2 VPN connected via system settings (no third-party client needed)
+- A VPN already connected via system settings (no third-party client needed)
 - `sudo` access (macOS/Linux) or Administrator (Windows)
 
 ## Installation
 
 ```bash
-# Clone the repo
 git clone https://github.com/Xaint00ship/tunnel_manager.git
 cd tunnel_manager
 
-# Create a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-**1. Connect your IKEv2 VPN** through system settings (macOS: System Settings → VPN, Windows: Settings → Network).
+**1. Connect your VPN** through system settings.
 
 **2. Run the manager:**
 
 ```bash
 # macOS / Linux — sudo required to modify routing table
-sudo .venv/bin/python3 main.py
+sudo .venv/bin/python main.py
 
 # Windows — run PowerShell as Administrator
 .venv\Scripts\python main.py
 ```
 
-The TUI dashboard launches automatically:
+Runs a full-screen Rich TUI dashboard. `Ctrl+C` to stop.
 
-```
-╭─ VPN SPLIT TUNNEL MANAGER ─ ● CONNECTED  ipsec0 via ...  •  ISP: 192.168.0.1 ─╮
-│ Routes active  842     Updated: 17:42:01  next refresh in 23h 59m    Active   │
-├───────────────────────────────────────────────────────────────────────────────┤
-│ Services via VPN                                                               │
-│ Service                          Routes                                        │
-│ Netflix                             312                                        │
-│ YouTube                             248                                        │
-│ Discord                             102                                        │
-├───────────────────────────────────────────────────────────────────────────────┤
-│ Log                                                                            │
-│ 17:42:00  INFO   Detecting VPN interface...                                    │
-│ 17:42:00  OK     VPN: ipsec0  gateway: link-layer  local ISP: 192.168.0.1      │
-│ 17:42:01  OK     Parsed 842 entries across 12 services                         │
-│ 17:42:03  OK     Done: 842 routes active, 0 skipped (already exist)            │
-╰───────────────────────────────────────────────────────────────────────────────╯
-```
+### CLI flags
 
-Stop with `Ctrl+C`. Routes remain active until the next reboot or manual flush (see below).
+| Flag | Description |
+|------|-------------|
+| `--no-tui` | Plain-text logging instead of the TUI (good for systemd, debugging). |
+| `--dry-run` | Print planned changes without touching the routing table. |
+| `--cleanup` | Remove all routes from a previous run and exit. |
+| `--compute-sha` | Print SHA-256 of the list source (for pinning), then exit. |
+| `-v` / `--verbose` | Debug logging. |
+| `--config PATH` | Use a different `config.json`. |
+
+You can also run the package directly: `python -m tunnel_manager`.
+
+### Logs
+
+All logs go to `~/.tunnel_manager/tunnel.log` (rotating, 1 MB × 3 backups) in addition to the TUI/stderr.
+
+### State
+
+`~/.tunnel_manager/state.json` records active routes and the PID of the running instance. If a previous run crashed, the next run reconciles stale routes automatically. Two instances cannot run concurrently.
 
 ## Configuration
 
-Edit `config.json` (created automatically on first run):
+`config.json` (created on first run):
 
 ```json
 {
   "list_url": "tunnel_list.txt",
-  "refresh_interval_hours": 24
+  "list_sha256": null,
+  "refresh_interval_hours": 24,
+  "watchdog_interval_seconds": 15
 }
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `list_url` | `tunnel_list.txt` | Source of the IP/CIDR list — either an `http(s)://` URL or a file path (absolute, or relative to `main.py`) |
-| `refresh_interval_hours` | `24` | How often to re-load the list and rebuild routes |
+| `list_url` | `tunnel_list.txt` | IP/CIDR list source — `http(s)://` URL or file path (absolute, or relative to `main.py`). |
+| `list_sha256` | `null` | Optional SHA-256 hex digest; if set, a mismatch aborts the load. Use `--compute-sha` to generate. |
+| `refresh_interval_hours` | `24` | How often to re-load the list and re-diff routes. |
+| `watchdog_interval_seconds` | `15` | VPN reconnect polling interval. |
 
-The repo ships with a bundled `tunnel_list.txt` so the tool works without depending on any external gist. Swap `list_url` for a URL (e.g. a GitHub gist raw link) if you want auto-updates from a remote source, or edit the bundled file directly.
+A `tunnel_list.txt` ships with the repo so the tool works offline. To use a remote list instead, point `list_url` at a URL and optionally pin the hash:
+
+```bash
+python main.py --compute-sha   # prints the current hash
+```
 
 ### List format
 
-The parser accepts a mixed plain-text format:
-
 - Plain IPs: `142.250.1.1`
 - CIDR blocks: `142.250.0.0/16`
-- Windows commands: `route ADD 142.250.0.0 MASK 255.255.0.0 ...` (auto-converted to CIDR)
-- Lines starting with `//` are comments
-- Lines with no IP are treated as **section headers** (e.g. `Netflix`, `YouTube`) and shown in the dashboard
-
-You can point `list_url` at any URL serving this format — a GitHub gist, raw file, or your own endpoint.
+- Multiple on one line: `1.1.1.1, 2.2.2.2, 3.3.3.3`
+- Windows commands: `ROUTE ADD 142.250.0.0 MASK 255.255.0.0 0.0.0.0` (converted to CIDR)
+- `//`-prefixed lines are ignored as comments
+- Any other non-IP line becomes a section header (leading `#`/`##` is stripped). Sections show up in the TUI with per-service route counts.
 
 ## Platform notes
 
-| Platform | VPN interface | Notes |
-|----------|---------------|-------|
-| macOS (IKEv2 native) | `ipsec0` | Routes added via `-interface` flag, no IP gateway |
-| macOS (other clients) | `utun*` | Routes added via tunnel gateway IP |
-| Windows | interface index | PowerShell `New-NetRoute` / `Remove-NetRoute` |
-| Linux | `xfrm*` / `tun*` / `ppp*` | `ip route` commands |
+| Platform | VPN detection | Route operations |
+|----------|---------------|------------------|
+| Windows | `Get-NetRoute` + adapter scoring (supports IKEv2, RAS/PPP, WireGuard, OpenVPN) | Batched `New-NetRoute` / `Remove-NetRoute` via PowerShell (chunks of 200) |
+| macOS | `netstat -rn` — picks `ipsec*` / `utun*` / `ppp*` with a default route | `route add/delete` via `sudo -n`, `-interface` for IPsec |
+| Linux | `ip route` — picks interface matching `^(utun|tun|wg|tap|xfrm|ppp|ipsec)\d*$` | `ip -force -batch -` from stdin (one syscall for all adds) |
 
-## Cleaning up routes
-
-On `Ctrl+C` the app exits cleanly but leaves routes in place (so traffic keeps working until you reconnect). To flush manually:
+## Development
 
 ```bash
-# macOS
-sudo route flush
-
-# Linux
-sudo ip route flush table main
-
-# Windows (PowerShell as Administrator)
-Get-NetRoute | Where-Object { $_.InterfaceIndex -eq <VPN_INTERFACE_INDEX> } | Remove-NetRoute -Confirm:$false
+pip install -r requirements-dev.txt
+pytest
 ```
 
 ## Troubleshooting
 
-**VPN not detected**
-Make sure the VPN is connected _before_ starting the manager. On macOS check `netstat -rn -f inet | grep default` — you should see a `default` route on `ipsec0` or `utun*`.
+**Insufficient privileges** — the tool fails fast if it can't modify routes. Re-run with `sudo` / elevated PowerShell.
 
-**`sudo` password prompt blocks routes**
-Add this to `/etc/sudoers` (via `sudo visudo`) to allow passwordless execution:
+**VPN not detected** — connect the VPN *before* starting. The watchdog will also pick up a VPN that connects after start. Run with `-v` to see what default routes were considered.
+
+**`sudo` password prompt blocks routes** — add to `/etc/sudoers` (via `sudo visudo`):
 ```
 your_user ALL=(ALL) NOPASSWD: /sbin/route, /sbin/ip
 ```
 
-**Routes not removed after reboot**
-That's expected — the OS routing table is reset on every boot and VPN reconnect. The manager rebuilds everything on startup.
+**Two instances at once** — refused with `Another instance is running (PID ...)`. The state file's PID is checked against live processes; if stale, remove `~/.tunnel_manager/state.json` manually.
 
-**List fetch fails**
-Check that `list_url` is reachable from your direct (non-VPN) connection. The fetch happens *after* the default route is restored to the ISP, so a broken ISP route will also break the fetch.
+**List fetch fails** — the list is loaded **before** the default route is touched, so a fetch failure leaves your normal connection untouched. Verify `list_url` is reachable; consider switching to the bundled `tunnel_list.txt`.
