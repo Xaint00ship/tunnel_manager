@@ -1,42 +1,36 @@
 # VPN Split Tunnel Manager
 
-Automatically routes only whitelisted domains through your IKEv2 VPN — everything else goes direct. No browser extensions, no proxy, no configuration on the VPN server side.
+Automatically routes only a curated list of IPs/subnets through your IKEv2 VPN — everything else goes direct. No browser extensions, no proxy, no configuration on the VPN server side.
 
 ```
-Netflix, YouTube, GitHub  ──►  VPN tunnel  ──►  your VPN server
-Everything else           ──►  direct ISP connection
+Curated IP list (Netflix, YouTube, ...)  ──►  VPN tunnel  ──►  your VPN server
+Everything else                           ──►  direct ISP connection
 ```
 
 ## How it works
 
 When you connect IKEv2 VPN on macOS or Windows, the OS adds a catch-all default route that sends **all** traffic through the tunnel. This tool:
 
-1. Detects the VPN interface (`ipsec0` on macOS, `utun*` for other protocols)
+1. Detects the VPN interface (`ipsec0` on macOS, `utun*`, `ppp*`, `xfrm*`, or the IKEv2 adapter on Windows)
 2. Removes the catch-all VPN default route
 3. Restores the local ISP default route
-4. Resolves whitelisted domains via DNS and adds per-IP host routes through the VPN
-5. Keeps routes fresh with background workers
+4. Downloads a curated list of IPs/CIDRs and adds per-entry routes through the VPN
+5. Keeps the list fresh and watches for VPN reconnects
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Startup                                                 │
 │  detect VPN interface → remove default VPN route         │
-│  restore ISP default → resolve whitelist → add /32 routes│
+│  restore ISP default → fetch list → add routes           │
 └──────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────┬──────────────────────────────┐
-│  periodic_ping (30 min) │  active_route_check (60 s)   │
-│  Re-resolve top-N       │  Ping every active IP        │
-│  domains by usage.      │  If unreachable → refresh    │
-│  Update IPs if changed. │  immediately (no lag).       │
+│  worker_refresh (24 h)  │  worker_vpn_watchdog (15 s)  │
+│  Re-fetch list,         │  Detect VPN reconnect →      │
+│  flush + re-apply       │  rebuild tunnel              │
+│  routes.                │  automatically.              │
 └─────────────────────────┴──────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────┐
-│  vpn_watchdog (15 s)                                    │
-│  Detect VPN reconnect → rebuild tunnel automatically    │
-└─────────────────────────────────────────────────────────┘
 ```
 
 ## Requirements
@@ -78,18 +72,21 @@ sudo .venv/bin/python3 main.py
 The TUI dashboard launches automatically:
 
 ```
-╭─ VPN SPLIT TUNNEL MANAGER ─ ● CONNECTED  ipsec0 via ...  local gw: 192.168.0.1 ─╮
-│ Stats: routes added  12   routes removed  0   IP changes  1   pings done  2      │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│ Domain           IPs                    Hits  Status   Last resolved  Last ping  │
-│ youtube.com      142.250.x.x, ...         8   active   17:42:01       —          │
-│ netflix.com      54.237.x.x, ...          3   active   17:42:02       —          │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│ Log                                                                               │
-│ 17:42:00  INFO   Detecting VPN interface...                                      │
-│ 17:42:00  OK     VPN detected: ipsec0                                            │
-│ 17:42:01  OK     Split tunnel active. Only whitelisted domains go through VPN.   │
-╰──────────────────────────────────────────────────────────────────────────────────╯
+╭─ VPN SPLIT TUNNEL MANAGER ─ ● CONNECTED  ipsec0 via ...  •  ISP: 192.168.0.1 ─╮
+│ Routes active  842     Updated: 17:42:01  next refresh in 23h 59m    Active   │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Services via VPN                                                               │
+│ Service                          Routes                                        │
+│ Netflix                             312                                        │
+│ YouTube                             248                                        │
+│ Discord                             102                                        │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Log                                                                            │
+│ 17:42:00  INFO   Detecting VPN interface...                                    │
+│ 17:42:00  OK     VPN: ipsec0  gateway: link-layer  local ISP: 192.168.0.1      │
+│ 17:42:01  OK     Parsed 842 entries across 12 services                         │
+│ 17:42:03  OK     Done: 842 routes active, 0 skipped (already exist)            │
+╰───────────────────────────────────────────────────────────────────────────────╯
 ```
 
 Stop with `Ctrl+C`. Routes remain active until the next reboot or manual flush (see below).
@@ -100,30 +97,27 @@ Edit `config.json` (created automatically on first run):
 
 ```json
 {
-  "whitelist": [
-    "netflix.com",
-    "youtube.com",
-    "github.com",
-    "openai.com"
-  ],
-  "ping_interval_seconds": 1800,
-  "active_check_interval_seconds": 60,
-  "top_n_to_ping": 10,
-  "dns_servers": ["8.8.8.8", "1.1.1.1"],
-  "dns_timeout": 5
+  "list_url": "https://gist.githubusercontent.com/iamwildtuna/7772b7c84a11bf6e1385f23096a73a15/raw/gistfile2.txt",
+  "refresh_interval_hours": 24
 }
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `whitelist` | — | Domains routed through VPN |
-| `ping_interval_seconds` | `1800` | How often to re-resolve top-N domains (30 min) |
-| `active_check_interval_seconds` | `60` | How often to ping active IPs for liveness |
-| `top_n_to_ping` | `10` | Number of most-used domains to keep fresh |
-| `dns_servers` | `["8.8.8.8", "1.1.1.1"]` | DNS servers used for resolving |
-| `dns_timeout` | `5` | DNS query timeout in seconds |
+| `list_url` | curated gist | URL of the IP/CIDR list to route through VPN |
+| `refresh_interval_hours` | `24` | How often to re-fetch the list and rebuild routes |
 
-Add or remove domains from `whitelist` and restart — changes take effect immediately on next run.
+### List format
+
+The parser accepts a mixed plain-text format:
+
+- Plain IPs: `142.250.1.1`
+- CIDR blocks: `142.250.0.0/16`
+- Windows commands: `route ADD 142.250.0.0 MASK 255.255.0.0 ...` (auto-converted to CIDR)
+- Lines starting with `//` are comments
+- Lines with no IP are treated as **section headers** (e.g. `Netflix`, `YouTube`) and shown in the dashboard
+
+You can point `list_url` at any URL serving this format — a GitHub gist, raw file, or your own endpoint.
 
 ## Platform notes
 
@@ -132,7 +126,7 @@ Add or remove domains from `whitelist` and restart — changes take effect immed
 | macOS (IKEv2 native) | `ipsec0` | Routes added via `-interface` flag, no IP gateway |
 | macOS (other clients) | `utun*` | Routes added via tunnel gateway IP |
 | Windows | interface index | PowerShell `New-NetRoute` / `Remove-NetRoute` |
-| Linux | `xfrm*` / `tun*` | `ip route` commands |
+| Linux | `xfrm*` / `tun*` / `ppp*` | `ip route` commands |
 
 ## Cleaning up routes
 
@@ -155,10 +149,13 @@ Get-NetRoute | Where-Object { $_.InterfaceIndex -eq <VPN_INTERFACE_INDEX> } | Re
 Make sure the VPN is connected _before_ starting the manager. On macOS check `netstat -rn -f inet | grep default` — you should see a `default` route on `ipsec0` or `utun*`.
 
 **`sudo` password prompt blocks routes**
-Add these commands to `/etc/sudoers` (via `sudo visudo`) to allow passwordless execution:
+Add this to `/etc/sudoers` (via `sudo visudo`) to allow passwordless execution:
 ```
-your_user ALL=(ALL) NOPASSWD: /sbin/route
+your_user ALL=(ALL) NOPASSWD: /sbin/route, /sbin/ip
 ```
 
 **Routes not removed after reboot**
 That's expected — the OS routing table is reset on every boot and VPN reconnect. The manager rebuilds everything on startup.
+
+**List fetch fails**
+Check that `list_url` is reachable from your direct (non-VPN) connection. The fetch happens *after* the default route is restored to the ISP, so a broken ISP route will also break the fetch.
