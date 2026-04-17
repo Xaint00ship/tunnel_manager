@@ -1,0 +1,17 @@
+{
+  "whitelist": [
+    "netflix.com",
+    "youtube.com",
+    "github.com",
+    "openai.com",
+    "anthropic.com",
+    "twitch.tv",
+    "chatgpt.com",
+    "accounts.youtube.com"
+  ],
+  "ping_interval_seconds": 1800,
+  "active_check_interval_seconds": 120,
+  "top_n_to_ping": 10,
+  "dns_servers": ["8.8.8.8", "1.1.1.1"],
+  "dns_timeout": 5
+}
