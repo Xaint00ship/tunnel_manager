@@ -165,23 +165,69 @@ class RouteManager:
             return True
         return False
 
+    _WIN_VPN_KEYWORDS = (
+        "ikev2", "vpn", "wireguard", "openvpn", "tap", "tun",
+        "ppp", "l2tp", "sstp", "ras",
+    )
+
     def _detect_windows(self) -> bool:
+        # Enumerate all default routes + adapter metadata in a single PowerShell call.
+        # RAS/PPP-style VPNs (OpenVPN user-mode, L2TP, custom clients) don't appear in
+        # Get-NetAdapter, so we can't filter by adapter description alone.
+        ps_script = (
+            "$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
+            "-ErrorAction SilentlyContinue; "
+            "$out = foreach ($r in $routes) { "
+            "  $a = Get-NetAdapter -InterfaceIndex $r.InterfaceIndex "
+            "    -ErrorAction SilentlyContinue; "
+            "  [PSCustomObject]@{ "
+            "    InterfaceIndex = [int]$r.InterfaceIndex; "
+            "    InterfaceAlias = [string]$r.InterfaceAlias; "
+            "    NextHop        = [string]$r.NextHop; "
+            "    Metric         = [int]$r.RouteMetric; "
+            "    Description    = if ($a) { [string]$a.InterfaceDescription } else { '' }; "
+            "    IsHardware     = [bool]$a "
+            "  } "
+            "}; "
+            "$out | ConvertTo-Json -Compress -Depth 2"
+        )
         out = subprocess.check_output(
-            ["powershell", "-Command",
-             "Get-NetAdapter | Where-Object { $_.InterfaceDescription -like '*IKEv2*' "
-             "-or $_.InterfaceDescription -like '*VPN*' } | Select-Object -First 1 -ExpandProperty ifIndex"],
-            text=True
+            ["powershell", "-NoProfile", "-Command", ps_script], text=True
         ).strip()
         if not out:
             return False
-        gw = subprocess.check_output(
-            ["powershell", "-Command",
-             f"(Get-NetRoute -InterfaceIndex {out} -DestinationPrefix '0.0.0.0/0').NextHop"],
-            text=True
-        ).strip()
-        self.vpn_interface = out
-        self.vpn_gateway = gw
-        return bool(gw)
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return False
+        if isinstance(data, dict):
+            data = [data]
+        if not data:
+            return False
+
+        def vpn_score(r: dict) -> int:
+            s = 0
+            if r.get("NextHop") == "0.0.0.0":
+                s += 10           # point-to-point tunnel
+            if not r.get("IsHardware"):
+                s += 5            # RAS/PPP (not an NDIS adapter)
+            text = f"{r.get('Description', '')} {r.get('InterfaceAlias', '')}".lower()
+            if any(k in text for k in self._WIN_VPN_KEYWORDS):
+                s += 3
+            return s
+
+        scored = sorted(data, key=vpn_score, reverse=True)
+        vpn = scored[0] if vpn_score(scored[0]) > 0 else None
+        if vpn is None:
+            return False
+        isp = next((r for r in data if r["InterfaceIndex"] != vpn["InterfaceIndex"]), None)
+
+        self.vpn_interface = str(vpn["InterfaceIndex"])
+        self.vpn_gateway = vpn["NextHop"] or "0.0.0.0"
+        if isp:
+            self.local_gateway = isp["NextHop"]
+            self.local_interface = str(isp["InterfaceIndex"])
+        return True
 
     def _detect_linux(self) -> bool:
         out = subprocess.check_output(["ip", "route"], text=True)
