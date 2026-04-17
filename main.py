@@ -30,12 +30,13 @@ console = Console()
 #  CONFIG
 # ─────────────────────────────────────────────
 
-CONFIG_FILE = "config.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 DEFAULT_CONFIG = {
-    "list_url": (
-        "https://gist.githubusercontent.com/iamwildtuna/"
-        "7772b7c84a11bf6e1385f23096a73a15/raw/gistfile2.txt"
-    ),
+    # Either an http(s):// URL or a path (absolute or relative to main.py).
+    # Ships with a bundled tunnel_list.txt so the tool works offline / without
+    # depending on a third-party gist staying up.
+    "list_url": "tunnel_list.txt",
     "refresh_interval_hours": 24,
 }
 
@@ -55,9 +56,14 @@ def _mask_to_prefix(mask: str) -> int:
     return sum(bin(int(b)).count("1") for b in mask.split("."))
 
 
-def fetch_list(url: str) -> str:
-    with urllib.request.urlopen(url, timeout=15) as r:
-        return r.read().decode()
+def fetch_list(source: str) -> str:
+    """Load the route list from an http(s) URL or a local file path."""
+    if source.startswith(("http://", "https://")):
+        with urllib.request.urlopen(source, timeout=15) as r:
+            return r.read().decode("utf-8")
+    path = source if os.path.isabs(source) else os.path.join(SCRIPT_DIR, source)
+    with open(path, encoding="utf-8") as f:
+        return f.read()
 
 
 def parse_route_list(text: str) -> dict[str, list[str]]:
@@ -433,13 +439,14 @@ class TunnelApp:
         loop = asyncio.get_event_loop()
         url = self.config["list_url"]
 
-        self._log("INFO", f"Fetching route list...")
-        self.status_line = "Fetching list..."
+        is_url = url.startswith(("http://", "https://"))
+        self._log("INFO", f"{'Fetching' if is_url else 'Loading'} route list from {url}")
+        self.status_line = "Fetching list..." if is_url else "Loading list..."
         try:
             raw = await loop.run_in_executor(None, fetch_list, url)
         except Exception as e:
-            self._log("ERROR", f"Failed to fetch list: {e}")
-            self.status_line = "Fetch failed"
+            self._log("ERROR", f"Failed to load list: {e}")
+            self.status_line = "Load failed"
             return
 
         sections = parse_route_list(raw)

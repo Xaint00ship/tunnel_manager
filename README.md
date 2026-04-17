@@ -97,15 +97,17 @@ Edit `config.json` (created automatically on first run):
 
 ```json
 {
-  "list_url": "https://gist.githubusercontent.com/iamwildtuna/7772b7c84a11bf6e1385f23096a73a15/raw/gistfile2.txt",
+  "list_url": "tunnel_list.txt",
   "refresh_interval_hours": 24
 }
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `list_url` | curated gist | URL of the IP/CIDR list to route through VPN |
-| `refresh_interval_hours` | `24` | How often to re-fetch the list and rebuild routes |
+| `list_url` | `tunnel_list.txt` | Source of the IP/CIDR list — either an `http(s)://` URL or a file path (absolute, or relative to `main.py`) |
+| `refresh_interval_hours` | `24` | How often to re-load the list and rebuild routes |
+
+The repo ships with a bundled `tunnel_list.txt` so the tool works without depending on any external gist. Swap `list_url` for a URL (e.g. a GitHub gist raw link) if you want auto-updates from a remote source, or edit the bundled file directly.
 
 ### List format
 
