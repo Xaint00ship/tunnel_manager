@@ -7,12 +7,21 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from .aggregator import collapse_routes
 from .backends import AddResult, RouteBackend, VPNInfo
 from .config import Config
 from .fetcher import load_list
 from .log import get_logger
 from .parser import parse_route_list
 from .state import StateFile
+
+
+def _fetch_with_etag(
+    source: str, base_dir, sha256, prev_etag
+) -> tuple[str | None, str | None]:
+    """Thin wrapper around load_list, kept module-level so it pickles cleanly
+    for asyncio's run_in_executor (older 3.x quirks aside)."""
+    return load_list(source, base_dir, sha256=sha256, prev_etag=prev_etag)
 
 
 class TunnelApp:
@@ -42,6 +51,7 @@ class TunnelApp:
         self.last_updated: float | None = None
         self.status_line = "Initializing..."
         self.running = False
+        self._cached_list_content: str | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
@@ -72,25 +82,59 @@ class TunnelApp:
         info = self.vpn_info
 
         # 1. Load list BEFORE touching routing — a failed fetch must not
-        #    leave the user with a torn-down default route.
+        #    leave the user with a torn-down default route. ETag lets us
+        #    skip the diff entirely when the source hasn't changed.
         self.status_line = "Loading list..."
+        prev_etag = self.state.data.get("list_etag")
         try:
-            raw = await loop.run_in_executor(
-                None, load_list, self.config.list_url,
-                self.base_dir, self.config.list_sha256,
+            raw, new_etag = await loop.run_in_executor(
+                None,
+                _fetch_with_etag,
+                self.config.list_url,
+                self.base_dir,
+                self.config.list_sha256,
+                prev_etag,
             )
         except Exception as e:
             self.log.error(f"Failed to load route list: {e}")
             self.status_line = "Load failed"
             return
 
-        sections = parse_route_list(raw)
-        desired: set[str] = set()
+        if raw is None and self._cached_list_content is not None:
+            self.log.info("Route list unchanged (304) — skipping diff.")
+            self.status_line = "Active"
+            return
+        if raw is None:
+            # 304 but no in-memory cache (first run after restart) — refetch unconditionally.
+            self.log.debug("304 with empty cache; refetching without ETag")
+            try:
+                raw, new_etag = await loop.run_in_executor(
+                    None,
+                    _fetch_with_etag,
+                    self.config.list_url,
+                    self.base_dir,
+                    self.config.list_sha256,
+                    None,
+                )
+            except Exception as e:
+                self.log.error(f"Failed to refetch route list: {e}")
+                return
+        self._cached_list_content = raw
+
+        sections = parse_route_list(raw or "")
+        parsed: set[str] = set()
         for entries in sections.values():
-            desired.update(entries)
+            parsed.update(entries)
         self.log.info(
-            f"Parsed {len(desired)} entries across {len(sections)} services"
+            f"Parsed {len(parsed)} entries across {len(sections)} services"
         )
+
+        # Aggregate: 700 entries → ~200 CIDRs, fewer route operations.
+        desired: set[str] = set(collapse_routes(list(parsed)))
+        if len(desired) < len(parsed):
+            self.log.info(
+                f"Aggregated {len(parsed)} entries → {len(desired)} CIDRs"
+            )
 
         # 2. Now snip the catch-all default.
         self.log.info("Removing catch-all VPN default route...")
@@ -165,6 +209,7 @@ class TunnelApp:
             vpn_interface=info.interface,
             vpn_gateway=info.gateway or "",
             vpn_backend=self.backend.name(),
+            list_etag=new_etag,
         )
 
     def _log_failure_summary(self, failures: list[tuple[str, str]]) -> None:

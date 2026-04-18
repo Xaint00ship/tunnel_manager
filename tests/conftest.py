@@ -29,7 +29,9 @@ def mock_backend(mock_vpn: VPNInfo) -> MockBackend:
 @pytest.fixture
 def list_file(tmp_path: Path) -> Path:
     p = tmp_path / "list.txt"
+    # Use a properly-aligned /24 so the aggregator's CIDR normalization
+    # leaves it in the same form (2.2.2.0/24 stays 2.2.2.0/24).
     p.write_bytes(
-        b"Meta\n1.1.1.1\n2.2.2.2/24\nDiscord\n3.3.3.3\n"
+        b"Meta\n1.1.1.1\n2.2.2.0/24\nDiscord\n3.3.3.3\n"
     )
     return p

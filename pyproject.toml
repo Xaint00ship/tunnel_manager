@@ -1,3 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tunnel-manager"
+version = "0.4.0"
+description = "VPN split-tunnel manager — routes a curated IPv4/IPv6 list through your VPN."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Xaint00ship" }]
+keywords = ["vpn", "split-tunnel", "ikev2", "routing", "wireguard", "openvpn"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "platformdirs>=4.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.8",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+tunnel-manager = "tunnel_manager.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Xaint00ship/tunnel_manager"
+Issues = "https://github.com/Xaint00ship/tunnel_manager/issues"
+Changelog = "https://github.com/Xaint00ship/tunnel_manager/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+packages = ["tunnel_manager", "tunnel_manager.backends"]
+
+[tool.setuptools.package-data]
+tunnel_manager = ["tunnel_list.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -19,8 +73,8 @@ select = [
     "RUF",          # ruff-specific
 ]
 ignore = [
-    "E501",         # line length — defer to formatter
-    "B008",         # function call in argument default — common with Path()
+    "E501",
+    "B008",
 ]
 
 [tool.ruff.lint.per-file-ignores]

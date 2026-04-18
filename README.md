@@ -42,6 +42,16 @@ When you connect a VPN (IKEv2, WireGuard, OpenVPN, L2TP, …), the OS typically 
 
 ## Installation
 
+### Via pip (recommended)
+
+```bash
+pip install tunnel-manager
+```
+
+This installs the `tunnel-manager` console script. The IP/CIDR list ships bundled inside the package.
+
+### From source
+
 ```bash
 git clone https://github.com/Xaint00ship/tunnel_manager.git
 cd tunnel_manager
@@ -49,21 +59,27 @@ cd tunnel_manager
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Usage
 
 **1. Connect your VPN** through system settings.
 
-**2. Run the manager:**
+**2. Run a self-test** to confirm prerequisites:
+
+```bash
+tunnel-manager --self-test
+```
+
+**3. Run the manager:**
 
 ```bash
 # macOS / Linux — sudo required to modify routing table
-sudo .venv/bin/python main.py
+sudo tunnel-manager
 
-# Windows — run PowerShell as Administrator
-.venv\Scripts\python main.py
+# Windows — elevated PowerShell
+tunnel-manager
 ```
 
 Runs a full-screen Rich TUI dashboard. `Ctrl+C` to stop.
@@ -78,8 +94,9 @@ Runs a full-screen Rich TUI dashboard. `Ctrl+C` to stop.
 | `--dry-run` | Print planned changes without touching the routing table. |
 | `--cleanup` | Remove all routes from a previous run and exit. Works even if the VPN is no longer connected — uses the interface saved in state. |
 | `--status` | Print last known state (PID liveness, routes, log tail) and exit. |
-| `--update-list URL` | Download a fresh list into the bundled `tunnel_list.txt` and exit. |
+| `--update-list URL` | Download a fresh list into the user data dir; if `list_sha256` is pinned in config, rotate the pin to match. |
 | `--compute-sha` | Print SHA-256 of the list source (for pinning), then exit. |
+| `--self-test` | Run a diagnostic check (privs, paths, list, VPN) and exit. |
 | `-v` / `--verbose` | Debug logging. |
 | `--config PATH` | Use a different `config.json`. |
 
@@ -123,11 +140,19 @@ State is persisted at the platform-native location (`~/.local/state/tunnel_manag
 
 The config is **hot-reloaded**: edit `config.json` while the manager is running and the new values take effect within ~10 seconds — no restart needed.
 
-A `tunnel_list.txt` ships with the repo so the tool works offline. To use a remote list instead, point `list_url` at a URL and optionally pin the hash:
+`tunnel_list.txt` ships inside the package so the tool works offline. Resolution priority for relative `list_url`:
+
+1. User data dir (where `--update-list` writes — `~/.local/share/tunnel_manager/`, `~/Library/Application Support/tunnel_manager/`, `%LOCALAPPDATA%\tunnel_manager\`).
+2. Bundled file inside the installed package.
+
+To use a remote list instead, point `list_url` at a URL and optionally pin the hash:
 
 ```bash
-python main.py --compute-sha   # prints the current hash
+tunnel-manager --compute-sha   # prints the current hash → set list_sha256 in config
+tunnel-manager --update-list https://example.com/list.txt   # rotates pin automatically
 ```
+
+The fetcher honors `If-None-Match` / `ETag` so scheduled refreshes that find an unchanged list skip the diff entirely (no route operations, zero downloaded bytes).
 
 ### List format
 
@@ -149,13 +174,14 @@ python main.py --compute-sha   # prints the current hash
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
-pytest          # 44 tests
+pip install -e ".[dev]"
+pytest          # 55 tests
 ruff check .    # lint
 mypy tunnel_manager
+pre-commit install   # run ruff + format on every commit
 ```
 
-CI runs the same on every push (Ubuntu / macOS / Windows × Python 3.11/3.12) — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+CI runs the same on every push (Ubuntu / macOS / Windows × Python 3.11/3.12) — see [.github/workflows/ci.yml](.github/workflows/ci.yml). Releases publish to PyPI on `v*` tags via Trusted Publishers — see [.github/workflows/release.yml](.github/workflows/release.yml).
 
 ## Running as a service
 

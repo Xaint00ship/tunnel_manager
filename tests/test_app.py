@@ -30,9 +30,9 @@ def make_app(mock_backend, tmp_path, list_file):
 async def test_setup_adds_all_routes_when_empty(make_app, mock_backend):
     app = make_app()
     await app.start()
-    # 3 entries from list_file + nothing in existing → 3 added
+    # 3 entries from list_file → aggregator normalizes to CIDR form
     assert app.total_routes == 3
-    assert {"1.1.1.1", "2.2.2.2/24", "3.3.3.3"} <= app.active_routes
+    assert {"1.1.1.1/32", "2.2.2.0/24", "3.3.3.3/32"} <= app.active_routes
     add_calls = [c for c in mock_backend.calls if c[0] == "add_routes"]
     assert len(add_calls) == 1
 
@@ -42,7 +42,7 @@ async def test_diff_only_adds_new_and_removes_stale(make_app, mock_vpn):
     backend = MockBackend(vpn=mock_vpn, existing={"1.1.1.1/32", "9.9.9.9/32"})
     app = make_app(backend=backend)
     await app.start()
-    # 9.9.9.9 should be removed (not in desired); 2.2.2.2/24 + 3.3.3.3 added.
+    # 9.9.9.9 should be removed (not in desired); 2.2.2.2/24 + 3.3.3.3/32 added.
     add_calls = [c for c in backend.calls if c[0] == "add_routes"]
     rm_calls = [c for c in backend.calls if c[0] == "remove_routes"]
     added: set[str] = set()
@@ -51,8 +51,8 @@ async def test_diff_only_adds_new_and_removes_stale(make_app, mock_vpn):
         added.update(c[1][0])
     for c in rm_calls:
         removed.update(c[1][0])
-    assert "1.1.1.1" not in added                # already exists
-    assert {"2.2.2.2/24", "3.3.3.3"} <= added
+    assert "1.1.1.1/32" not in added             # already exists
+    assert {"2.2.2.0/24", "3.3.3.3/32"} <= added
     assert "9.9.9.9/32" in removed
 
 
@@ -96,9 +96,9 @@ async def test_no_vpn_detected_skips_setup(make_app, mock_vpn, tmp_path, list_fi
 async def test_state_persists_after_setup(make_app, tmp_path):
     app = make_app()
     await app.start()
-    # Reload state from disk
+    # Reload state from disk — entries are stored in CIDR form post-aggregation.
     fresh = StateFile(tmp_path / "state.json")
-    assert set(fresh.previous_routes()) >= {"1.1.1.1", "2.2.2.2/24", "3.3.3.3"}
+    assert set(fresh.previous_routes()) >= {"1.1.1.1/32", "2.2.2.0/24", "3.3.3.3/32"}
     assert fresh.previous_interface() == "50"
 
 
@@ -124,7 +124,7 @@ async def test_cleanup_uses_state_when_vpn_gone(make_app, tmp_path, mock_vpn):
 async def test_failure_aggregation_groups_messages(make_app, mock_vpn, tmp_path, list_file):
     backend = MockBackend(
         vpn=mock_vpn,
-        add_failures={"1.1.1.1": "File exists", "2.2.2.2/24": "File exists",
+        add_failures={"1.1.1.1": "File exists", "2.2.2.0/24": "File exists",
                       "3.3.3.3": "Network unreachable"},
     )
     cfg = Config(list_url=str(list_file))
