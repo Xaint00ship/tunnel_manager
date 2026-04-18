@@ -11,7 +11,7 @@ from pathlib import Path
 # Make sure the package directory is importable when running from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tunnel_manager.cli import main  # noqa: E402
+from tunnel_manager.cli import main
 
 if __name__ == "__main__":
     sys.exit(main())

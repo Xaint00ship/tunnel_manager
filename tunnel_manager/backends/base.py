@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class VPNInfo:
     interface: str                    # iface name on *nix, ifIndex (as str) on Windows
-    gateway: Optional[str]            # None / "0.0.0.0" / link-layer → "no next hop"
-    local_gateway: Optional[str] = None
-    local_interface: Optional[str] = None
+    gateway: str | None            # None / "0.0.0.0" / link-layer → "no next hop"
+    local_gateway: str | None = None
+    local_interface: str | None = None
 
     def describe(self) -> str:
         s = self.interface
@@ -43,7 +42,7 @@ class RouteBackend(ABC):
     def is_privileged(self) -> bool: ...
 
     @abstractmethod
-    def detect_vpn(self) -> Optional[VPNInfo]: ...
+    def detect_vpn(self) -> VPNInfo | None: ...
 
     @abstractmethod
     def remove_default_vpn_route(self, info: VPNInfo) -> None: ...

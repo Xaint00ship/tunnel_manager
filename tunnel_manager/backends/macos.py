@@ -1,11 +1,15 @@
-"""macOS route backend — `route` command via sudo."""
+"""macOS route backend — `route` command via sudo.
+
+Handles IPv4 and IPv6 by dispatching `route ... -inet` / `-inet6`
+based on each entry's address family.
+"""
 
 from __future__ import annotations
 
 import os
 import subprocess
-from typing import Optional
 
+from ..parser import address_family
 from .base import AddResult, RouteBackend, VPNInfo
 
 
@@ -19,13 +23,23 @@ class MacOSBackend(RouteBackend):
         return hasattr(os, "geteuid") and os.geteuid() == 0
 
     def _sudo(self, argv: list[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["sudo", "-n"] + argv, capture_output=True, text=True
-        )
+        return subprocess.run(["sudo", "-n", *argv], capture_output=True, text=True)
+
+    @staticmethod
+    def _family(entry: str) -> int:
+        return address_family(entry.split("/")[0])
+
+    @staticmethod
+    def _route_flag(entry: str) -> str:
+        return "-net" if "/" in entry else "-host"
+
+    @staticmethod
+    def _family_flag(entry: str) -> str:
+        return "-inet6" if MacOSBackend._family(entry) == 6 else "-inet"
 
     # ── detection ──────────────────────────────────────────────────────
 
-    def detect_vpn(self) -> Optional[VPNInfo]:
+    def detect_vpn(self) -> VPNInfo | None:
         out = subprocess.check_output(["netstat", "-rn", "-f", "inet"], text=True)
         vpn_iface = vpn_gw = local_gw = local_iface = None
         for line in out.splitlines():
@@ -39,10 +53,13 @@ class MacOSBackend(RouteBackend):
                 if vpn_iface is None or dest == "default":
                     vpn_iface = iface
                     vpn_gw = None if gw.startswith("link#") else gw
-            elif iface.startswith(("en", "eth", "wlan")) and local_gw is None:
-                if not gw.startswith("link#"):
-                    local_gw = gw
-                    local_iface = iface
+            elif (
+                iface.startswith(("en", "eth", "wlan"))
+                and local_gw is None
+                and not gw.startswith("link#")
+            ):
+                local_gw = gw
+                local_iface = iface
         if not vpn_iface:
             return None
         return VPNInfo(
@@ -53,18 +70,14 @@ class MacOSBackend(RouteBackend):
     def _is_ipsec(self, info: VPNInfo) -> bool:
         return info.interface.startswith("ipsec")
 
-    @staticmethod
-    def _route_flag(entry: str) -> str:
-        return "-net" if "/" in entry else "-host"
-
     # ── default route mgmt ─────────────────────────────────────────────
 
     def remove_default_vpn_route(self, info: VPNInfo) -> None:
         for dest in ("default", "0/1", "128.0/1"):
             self._sudo(["route", "delete", dest, "-interface", info.interface])
+        # Also try IPv6 default:
+        self._sudo(["route", "delete", "-inet6", "default", "-interface", info.interface])
         if info.local_gateway and info.local_interface:
-            # macOS scopes the restored ISP default to the interface (flag I); without
-            # a global default sockets can't route outbound. Re-add as global.
             self._sudo(
                 ["route", "delete", "default", "-ifscope",
                  info.local_interface, info.local_gateway]
@@ -75,13 +88,15 @@ class MacOSBackend(RouteBackend):
 
     # ── add/remove ─────────────────────────────────────────────────────
 
-    def _add_argv(self, entry: str, info: VPNInfo) -> Optional[list[str]]:
+    def _add_argv(self, entry: str, info: VPNInfo) -> list[str] | None:
         flag = self._route_flag(entry)
+        family = self._family_flag(entry)
         if self._is_ipsec(info):
-            return ["route", "add", flag, entry, "-interface", info.interface]
-        if info.gateway:
-            return ["route", "add", flag, entry, info.gateway]
-        return None
+            return ["route", "add", family, flag, entry, "-interface", info.interface]
+        if info.gateway and self._family(entry) == 4:
+            return ["route", "add", family, flag, entry, info.gateway]
+        # IPv6 or no gateway → fall back to interface routing
+        return ["route", "add", family, flag, entry, "-interface", info.interface]
 
     def add_routes(self, entries: list[str], info: VPNInfo) -> AddResult:
         added: list[str] = []
@@ -101,19 +116,28 @@ class MacOSBackend(RouteBackend):
     def remove_routes(self, entries: list[str], info: VPNInfo) -> None:
         for entry in entries:
             flag = self._route_flag(entry)
-            self._sudo(["route", "delete", flag, entry, "-interface", info.interface])
+            family = self._family_flag(entry)
+            self._sudo(
+                ["route", "delete", family, flag, entry, "-interface", info.interface]
+            )
 
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
-        out = subprocess.check_output(["netstat", "-rn", "-f", "inet"], text=True)
-        routes = []
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) < 4:
+        routes: list[str] = []
+        for family_flag in ("inet", "inet6"):
+            try:
+                out = subprocess.check_output(
+                    ["netstat", "-rn", "-f", family_flag], text=True
+                )
+            except subprocess.CalledProcessError:
                 continue
-            dest, iface = parts[0], parts[-1]
-            if iface != info.interface:
-                continue
-            if dest in ("default", "0/1", "128.0/1"):
-                continue
-            routes.append(dest)
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                dest, iface = parts[0], parts[-1]
+                if iface != info.interface:
+                    continue
+                if dest in ("default", "0/1", "128.0/1"):
+                    continue
+                routes.append(dest)
         return routes

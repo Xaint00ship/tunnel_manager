@@ -72,9 +72,13 @@ Runs a full-screen Rich TUI dashboard. `Ctrl+C` to stop.
 
 | Flag | Description |
 |------|-------------|
+| `--version` | Print version and exit. |
 | `--no-tui` | Plain-text logging instead of the TUI (good for systemd, debugging). |
+| `--persist-tui` | Render the TUI in the main scrollback instead of the alt screen. |
 | `--dry-run` | Print planned changes without touching the routing table. |
-| `--cleanup` | Remove all routes from a previous run and exit. |
+| `--cleanup` | Remove all routes from a previous run and exit. Works even if the VPN is no longer connected — uses the interface saved in state. |
+| `--status` | Print last known state (PID liveness, routes, log tail) and exit. |
+| `--update-list URL` | Download a fresh list into the bundled `tunnel_list.txt` and exit. |
 | `--compute-sha` | Print SHA-256 of the list source (for pinning), then exit. |
 | `-v` / `--verbose` | Debug logging. |
 | `--config PATH` | Use a different `config.json`. |
@@ -83,11 +87,17 @@ You can also run the package directly: `python -m tunnel_manager`.
 
 ### Logs
 
-All logs go to `~/.tunnel_manager/tunnel.log` (rotating, 1 MB × 3 backups) in addition to the TUI/stderr.
+All logs go to a rotating file (1 MB × 3 backups) at the platform-native location:
+
+| Platform | Path |
+|----------|------|
+| Linux | `~/.local/state/tunnel_manager/tunnel.log` (or `$XDG_STATE_HOME/tunnel_manager`) |
+| macOS | `~/Library/Logs/tunnel_manager/tunnel.log` |
+| Windows | `%LOCALAPPDATA%\tunnel_manager\Logs\tunnel.log` |
 
 ### State
 
-`~/.tunnel_manager/state.json` records active routes and the PID of the running instance. If a previous run crashed, the next run reconciles stale routes automatically. Two instances cannot run concurrently.
+State is persisted at the platform-native location (`~/.local/state/tunnel_manager/state.json` on Linux, etc.) with active routes, the VPN interface, and a heartbeat. If a previous run crashed, the next run reconciles stale routes automatically. The single-instance guard checks both PID liveness and heartbeat freshness — a stale state file from a `kill -9`'d process won't block subsequent runs.
 
 ## Configuration
 
@@ -98,7 +108,8 @@ All logs go to `~/.tunnel_manager/tunnel.log` (rotating, 1 MB × 3 backups) in a
   "list_url": "tunnel_list.txt",
   "list_sha256": null,
   "refresh_interval_hours": 24,
-  "watchdog_interval_seconds": 15
+  "watchdog_interval_seconds": 15,
+  "heartbeat_interval_seconds": 30
 }
 ```
 
@@ -108,6 +119,9 @@ All logs go to `~/.tunnel_manager/tunnel.log` (rotating, 1 MB × 3 backups) in a
 | `list_sha256` | `null` | Optional SHA-256 hex digest; if set, a mismatch aborts the load. Use `--compute-sha` to generate. |
 | `refresh_interval_hours` | `24` | How often to re-load the list and re-diff routes. |
 | `watchdog_interval_seconds` | `15` | VPN reconnect polling interval. |
+| `heartbeat_interval_seconds` | `30` | How often to update the state file's liveness marker. |
+
+The config is **hot-reloaded**: edit `config.json` while the manager is running and the new values take effect within ~10 seconds — no restart needed.
 
 A `tunnel_list.txt` ships with the repo so the tool works offline. To use a remote list instead, point `list_url` at a URL and optionally pin the hash:
 
@@ -117,8 +131,8 @@ python main.py --compute-sha   # prints the current hash
 
 ### List format
 
-- Plain IPs: `142.250.1.1`
-- CIDR blocks: `142.250.0.0/16`
+- IPv4: `142.250.1.1` and CIDR `142.250.0.0/16`
+- IPv6: `2606:4700::1111` and CIDR `2606:4700::/32`
 - Multiple on one line: `1.1.1.1, 2.2.2.2, 3.3.3.3`
 - Windows commands: `ROUTE ADD 142.250.0.0 MASK 255.255.0.0 0.0.0.0` (converted to CIDR)
 - `//`-prefixed lines are ignored as comments
@@ -136,8 +150,16 @@ python main.py --compute-sha   # prints the current hash
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+pytest          # 44 tests
+ruff check .    # lint
+mypy tunnel_manager
 ```
+
+CI runs the same on every push (Ubuntu / macOS / Windows × Python 3.11/3.12) — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+## Running as a service
+
+Templates for systemd (Linux), launchd (macOS) and NSSM (Windows) live in [packaging/](packaging/). Each runs the manager with `--no-tui` so it logs to a file instead of taking over a terminal.
 
 ## Troubleshooting
 

@@ -1,4 +1,4 @@
-from tunnel_manager.parser import parse_route_list
+from tunnel_manager.parser import address_family, parse_route_list
 
 
 def test_empty():
@@ -43,6 +43,37 @@ def test_multiple_ips_one_line():
 def test_default_section_when_no_header():
     text = "1.1.1.1\n"
     assert parse_route_list(text) == {"Other": ["1.1.1.1"]}
+
+
+def test_ipv6_plain():
+    text = "Meta\n2001:db8::1\n"
+    assert parse_route_list(text) == {"Meta": ["2001:db8::1"]}
+
+
+def test_ipv6_cidr():
+    text = "Cloudflare\n2606:4700::/32\n"
+    assert parse_route_list(text) == {"Cloudflare": ["2606:4700::/32"]}
+
+
+def test_ipv6_compressed():
+    text = "Loop\n::1\nfe80::1\n"
+    r = parse_route_list(text)
+    assert "::1" in r["Loop"]
+    assert "fe80::1" in r["Loop"]
+
+
+def test_invalid_ipv6_treated_as_header():
+    text = "1234:invalid\n1.2.3.4\n"
+    r = parse_route_list(text)
+    # Junk line is the section name; the IP follows
+    assert r == {"1234:invalid": ["1.2.3.4"]}
+
+
+def test_address_family_helper():
+    assert address_family("1.2.3.4") == 4
+    assert address_family("1.2.3.0/24") == 4
+    assert address_family("::1") == 6
+    assert address_family("2001:db8::/32") == 6
 
 
 def test_mixed_real_world_snippet():

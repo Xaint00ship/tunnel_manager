@@ -1,0 +1,28 @@
+[Unit]
+Description=VPN Split Tunnel Manager
+Documentation=https://github.com/Xaint00ship/tunnel_manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust paths to where you cloned the repo and created the venv:
+WorkingDirectory=/opt/tunnel_manager
+ExecStart=/opt/tunnel_manager/.venv/bin/python /opt/tunnel_manager/main.py --no-tui
+Restart=on-failure
+RestartSec=5
+
+# Privileges: needs root for routing table changes. If you'd rather not
+# run as root, give the user CAP_NET_ADMIN via setcap or polkit.
+User=root
+
+# Hardening (good defaults for a routing-table tool — adjust if you hit
+# permission errors and run with `journalctl -u tunnel-manager -f`):
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tunnel_manager /var/log/tunnel_manager /opt/tunnel_manager
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

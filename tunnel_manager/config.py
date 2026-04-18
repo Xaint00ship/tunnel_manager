@@ -1,26 +1,75 @@
-"""Typed configuration loaded from config.json."""
+"""Typed configuration loaded from config.json.
+
+Supports hot-reload: `Config.maybe_reload()` re-reads from disk if the
+file's mtime changed and returns a fresh instance, otherwise returns
+the original.
+"""
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
 class Config:
     list_url: str = "tunnel_list.txt"
-    list_sha256: Optional[str] = None
+    list_sha256: str | None = None
     refresh_interval_hours: int = 24
     watchdog_interval_seconds: int = 15
+    heartbeat_interval_seconds: int = 30
+
+    _path: Path | None = field(default=None, repr=False, compare=False)
+    _mtime: float = field(default=0.0, repr=False, compare=False)
 
     @classmethod
-    def load(cls, path: Path) -> "Config":
+    def load(cls, path: Path) -> Config:
         if not path.exists():
             cfg = cls()
-            path.write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
+            cls._save(cfg, path)
+            cfg._path = path
+            cfg._mtime = path.stat().st_mtime
             return cfg
         data = json.loads(path.read_text(encoding="utf-8"))
-        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        return cls(**known)
+        known = {
+            k: v for k, v in data.items()
+            if k in cls.__dataclass_fields__ and not k.startswith("_")
+        }
+        cfg = cls(**known)
+        cfg._path = path
+        cfg._mtime = path.stat().st_mtime
+        cls._validate(cfg)
+        return cfg
+
+    def maybe_reload(self) -> Config:
+        """Return a fresh Config if the source file changed, else self."""
+        if self._path is None or not self._path.exists():
+            return self
+        try:
+            mtime = self._path.stat().st_mtime
+        except OSError:
+            return self
+        if mtime <= self._mtime:
+            return self
+        try:
+            return Config.load(self._path)
+        except (json.JSONDecodeError, ValueError):
+            return self
+
+    @staticmethod
+    def _save(cfg: Config, path: Path) -> None:
+        d = {
+            k: v for k, v in asdict(cfg).items()
+            if not k.startswith("_")
+        }
+        path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _validate(cfg: Config) -> None:
+        if cfg.refresh_interval_hours < 0:
+            raise ValueError("refresh_interval_hours must be >= 0")
+        if cfg.watchdog_interval_seconds < 5:
+            raise ValueError("watchdog_interval_seconds must be >= 5")
+        if cfg.heartbeat_interval_seconds < 5:
+            raise ValueError("heartbeat_interval_seconds must be >= 5")

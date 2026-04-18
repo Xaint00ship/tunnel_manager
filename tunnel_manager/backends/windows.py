@@ -1,16 +1,20 @@
-"""Windows route backend — PowerShell with batched operations."""
+"""Windows route backend — PowerShell with batched operations.
+
+Detects the VPN by scoring 0.0.0.0/0 routes (point-to-point next hop, RAS
+adapters, VPN-keyword interface descriptions). Adds/removes routes in
+chunks of 200 per PowerShell invocation, both IPv4 and IPv6.
+"""
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import subprocess
-from typing import Optional
 
+from ..parser import address_family
 from .base import AddResult, RouteBackend, VPNInfo
 
-
-# Chunk size keeps PowerShell command line under the ~32K process-creation limit.
 _CHUNK = 200
 
 
@@ -42,11 +46,19 @@ class WindowsBackend(RouteBackend):
 
     @staticmethod
     def _normalize(entry: str) -> str:
-        return entry if "/" in entry else f"{entry}/32"
+        if "/" in entry:
+            return entry
+        return f"{entry}/32" if address_family(entry) == 4 else f"{entry}/128"
+
+    @staticmethod
+    def _next_hop_for(entry: str, info: VPNInfo) -> str:
+        if address_family(entry.split("/")[0]) == 6:
+            return "::"
+        return info.gateway or "0.0.0.0"
 
     # ── detection ──────────────────────────────────────────────────────
 
-    def detect_vpn(self) -> Optional[VPNInfo]:
+    def detect_vpn(self) -> VPNInfo | None:
         script = (
             "$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue; "
             "$out = foreach ($r in $routes) { "
@@ -102,42 +114,48 @@ class WindowsBackend(RouteBackend):
     # ── default route mgmt ─────────────────────────────────────────────
 
     def remove_default_vpn_route(self, info: VPNInfo) -> None:
-        self._ps(
-            f"Remove-NetRoute -InterfaceIndex {info.interface} "
-            f"-DestinationPrefix '0.0.0.0/0' -Confirm:$false "
-            f"-ErrorAction SilentlyContinue"
-        )
+        for prefix in ("0.0.0.0/0", "::/0"):
+            with contextlib.suppress(RuntimeError):
+                self._ps(
+                    f"Remove-NetRoute -InterfaceIndex {info.interface} "
+                    f"-DestinationPrefix '{prefix}' -Confirm:$false "
+                    f"-ErrorAction SilentlyContinue"
+                )
 
     # ── bulk add/remove ────────────────────────────────────────────────
 
     def add_routes(self, entries: list[str], info: VPNInfo) -> AddResult:
         added: list[str] = []
         failed: list[tuple[str, str]] = []
-        gw = info.gateway or "0.0.0.0"
         for i in range(0, len(entries), _CHUNK):
             chunk = entries[i : i + _CHUNK]
-            added_part, failed_part = self._add_chunk(chunk, info.interface, gw)
+            added_part, failed_part = self._add_chunk(chunk, info)
             added.extend(added_part)
             failed.extend(failed_part)
         return AddResult(added=added, failed=failed)
 
     def _add_chunk(
-        self, chunk: list[str], iface: str, gateway: str
+        self, chunk: list[str], info: VPNInfo
     ) -> tuple[list[str], list[tuple[str, str]]]:
-        prefixes = [self._normalize(e) for e in chunk]
-        ps_list = ",".join(f"'{p}'" for p in prefixes)
+        # Each entry carries its own NextHop because chunks may mix v4/v6.
+        items = []
+        for e in chunk:
+            prefix = self._normalize(e)
+            nh = self._next_hop_for(prefix, info)
+            items.append(f"@{{Prefix='{prefix}'; NextHop='{nh}'}}")
+        ps_list = ",".join(items)
         script = (
-            f"$prefixes = @({ps_list}); "
-            f"$results = foreach ($p in $prefixes) {{ "
+            f"$items = @({ps_list}); "
+            f"$results = foreach ($it in $items) {{ "
             f"  try {{ "
-            f"    $null = New-NetRoute -DestinationPrefix $p "
-            f"      -InterfaceIndex {iface} -NextHop '{gateway}' "
+            f"    $null = New-NetRoute -DestinationPrefix $it.Prefix "
+            f"      -InterfaceIndex {info.interface} -NextHop $it.NextHop "
             f"      -PolicyStore ActiveStore -ErrorAction Stop; "
-            f"    [PSCustomObject]@{{ Prefix=$p; Ok=$true; Error='' }} "
+            f"    [PSCustomObject]@{{ Prefix=$it.Prefix; Ok=$true; Error='' }} "
             f"  }} catch {{ "
             f"    $msg = $_.Exception.Message; "
             f"    $ok = $msg -match 'already exists'; "
-            f"    [PSCustomObject]@{{ Prefix=$p; Ok=$ok; Error=$msg }} "
+            f"    [PSCustomObject]@{{ Prefix=$it.Prefix; Ok=$ok; Error=$msg }} "
             f"  }} "
             f"}}; "
             f"$results | ConvertTo-Json -Compress -Depth 2"
@@ -152,7 +170,7 @@ class WindowsBackend(RouteBackend):
         if isinstance(data, dict):
             data = [data]
         added, failed = [], []
-        for r, orig in zip(data, chunk):
+        for r, orig in zip(data, chunk, strict=False):
             if r.get("Ok"):
                 added.append(orig)
             else:
@@ -174,16 +192,15 @@ class WindowsBackend(RouteBackend):
                 f"    -Confirm:$false -ErrorAction SilentlyContinue "
                 f"}}"
             )
-            try:
+            with contextlib.suppress(RuntimeError):
                 self._ps(script)
-            except RuntimeError:
-                pass
 
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         script = (
             f"$r = Get-NetRoute -InterfaceIndex {info.interface} "
-            f"-AddressFamily IPv4 -ErrorAction SilentlyContinue | "
-            f"Where-Object {{ $_.DestinationPrefix -ne '0.0.0.0/0' }}; "
+            f"-ErrorAction SilentlyContinue | "
+            f"Where-Object {{ $_.DestinationPrefix -ne '0.0.0.0/0' "
+            f"  -and $_.DestinationPrefix -ne '::/0' }}; "
             f"($r | ForEach-Object {{ $_.DestinationPrefix }}) -join \"`n\""
         )
         try:

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tunnel-manager</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Adjust paths for your install location: -->
+        <string>/opt/tunnel_manager/.venv/bin/python</string>
+        <string>/opt/tunnel_manager/main.py</string>
+        <string>--no-tui</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/tunnel_manager</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/tunnel-manager.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/tunnel-manager.err.log</string>
+</dict>
+</plist>
+
+<!--
+Install:
+  sudo cp packaging/launchd/com.tunnel-manager.plist /Library/LaunchDaemons/
+  sudo chown root:wheel /Library/LaunchDaemons/com.tunnel-manager.plist
+  sudo launchctl load -w /Library/LaunchDaemons/com.tunnel-manager.plist
+
+Uninstall:
+  sudo launchctl unload -w /Library/LaunchDaemons/com.tunnel-manager.plist
+  sudo rm /Library/LaunchDaemons/com.tunnel-manager.plist
+-->

@@ -6,10 +6,8 @@ import logging
 from collections import deque
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
-LOG_DIR = Path.home() / ".tunnel_manager"
-LOG_FILE = LOG_DIR / "tunnel.log"
+from .paths import LOG_DIR, LOG_FILE
 
 
 class InMemoryHandler(logging.Handler):
@@ -46,7 +44,9 @@ def setup_logging(verbose: bool = False, use_tui: bool = True) -> InMemoryHandle
 
     if not use_tui:
         stream = logging.StreamHandler()
-        stream.setFormatter(logging.Formatter("%(asctime)s %(levelname)-6s %(message)s", "%H:%M:%S"))
+        stream.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)-6s %(message)s", "%H:%M:%S")
+        )
         root.addHandler(stream)
 
     return mem

@@ -15,7 +15,6 @@ from rich.text import Text
 
 from .log import InMemoryHandler
 
-
 _LEVEL_COLORS = {
     "DEBUG": "dim",
     "INFO": "blue",
@@ -95,8 +94,14 @@ def _render(app, log_handler: InMemoryHandler):
     return Group(header, stats_panel, svc_panel, log_panel)
 
 
-async def run_tui(app, log_handler: InMemoryHandler) -> None:
-    with Live(_render(app, log_handler), refresh_per_second=2, screen=True) as live:
+async def run_tui(
+    app, log_handler: InMemoryHandler, persist: bool = False
+) -> None:
+    with Live(
+        _render(app, log_handler),
+        refresh_per_second=2,
+        screen=not persist,
+    ) as live:
         while app.running:
             live.update(_render(app, log_handler))
             await asyncio.sleep(0.5)

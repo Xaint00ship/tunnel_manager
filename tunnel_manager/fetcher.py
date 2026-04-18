@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import urllib.request
 from pathlib import Path
-from typing import Optional
 
 
 def _is_url(source: str) -> bool:
@@ -23,7 +22,7 @@ def _resolve_path(source: str, base_dir: Path) -> Path:
 def load_list(
     source: str,
     base_dir: Path,
-    sha256: Optional[str] = None,
+    sha256: str | None = None,
     timeout: int = 15,
 ) -> str:
     if _is_url(source):
