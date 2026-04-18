@@ -73,21 +73,29 @@ class StateFile:
         if pid <= 0:
             return False
         if os.name == "nt":
-            import ctypes
-
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
-            )
-            if not handle:
-                return False
-            exit_code = ctypes.c_ulong()
-            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-            kernel32.CloseHandle(handle)
-            return bool(ok and exit_code.value == 259)
+            return _windows_pid_alive(int(pid))
         try:
             os.kill(int(pid), 0)
             return True
         except (OSError, ProcessLookupError, PermissionError):
             return False
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """Windows-only PID liveness check via Win32 API."""
+    import ctypes
+
+    # ctypes.windll only exists on Windows; getattr keeps mypy happy on
+    # platforms where it isn't defined in the typeshed stubs.
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return False
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    exit_code = ctypes.c_ulong()
+    ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+    kernel32.CloseHandle(handle)
+    return bool(ok and exit_code.value == 259)

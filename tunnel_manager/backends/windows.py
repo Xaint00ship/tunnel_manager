@@ -28,8 +28,11 @@ class WindowsBackend(RouteBackend):
         return "windows"
 
     def is_privileged(self) -> bool:
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
         try:
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+            return bool(windll.shell32.IsUserAnAdmin())
         except (AttributeError, OSError):
             return False
 

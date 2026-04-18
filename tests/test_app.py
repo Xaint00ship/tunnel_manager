@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from tests.conftest import MockBackend
 from tunnel_manager.app import TunnelApp
 from tunnel_manager.config import Config
 from tunnel_manager.state import StateFile
+
+from ._mocks import MockBackend
 
 
 @pytest.fixture
