@@ -6,6 +6,7 @@ based on each entry's address family.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import subprocess
 
@@ -115,8 +116,11 @@ class MacOSBackend(RouteBackend):
 
     def remove_routes(self, entries: list[str], info: VPNInfo) -> None:
         for entry in entries:
-            flag = self._route_flag(entry)
-            family = self._family_flag(entry)
+            try:
+                flag = self._route_flag(entry)
+                family = self._family_flag(entry)
+            except ValueError:
+                continue
             self._sudo(
                 ["route", "delete", family, flag, entry, "-interface", info.interface]
             )
@@ -138,6 +142,10 @@ class MacOSBackend(RouteBackend):
                 if iface != info.interface:
                     continue
                 if dest in ("default", "0/1", "128.0/1"):
+                    continue
+                try:
+                    ipaddress.ip_network(dest, strict=False)
+                except ValueError:
                     continue
                 routes.append(dest)
         return routes
