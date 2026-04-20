@@ -19,10 +19,13 @@ DB_ROUTES_URL = "http://localhost/api/routes"
 class Config:
     list_url: str = "tunnel_list.txt"
     list_source: str = "file"   # "file" or "db"
+    list_api_key: str | None = None  # X-Api-Key header when list_source == "db"
     list_sha256: str | None = None
     refresh_interval_hours: int = 24
     watchdog_interval_seconds: int = 15
     heartbeat_interval_seconds: int = 30
+    grey_api_url: str | None = None   # dashboard base URL for grey list reporting
+    grey_api_key: str | None = None   # X-Api-Key for /api/analytics/grey-list/report
 
     def effective_list_url(self) -> str:
         """Return the URL/path to fetch the route list from."""

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
@@ -16,12 +19,40 @@ from .parser import parse_route_list
 from .state import StateFile
 
 
+def _http_probe(ip: str, timeout: int = 3) -> int:
+    """Return HTTP status for http://ip/ or 0 on connection error."""
+    try:
+        with urllib.request.urlopen(f"http://{ip}/", timeout=timeout) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def _report_grey(base_url: str, api_key: str | None, ip: str, reason: str) -> None:
+    """POST ip to dashboard grey list report endpoint."""
+    payload = json.dumps({"ip": ip, "reason": reason}).encode()
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/analytics/grey-list/report",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    if api_key:
+        req.add_header("X-Api-Key", api_key)
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass
+
+
 def _fetch_with_etag(
-    source: str, base_dir, sha256, prev_etag
+    source: str, base_dir, sha256, prev_etag, api_key=None
 ) -> tuple[str | None, str | None]:
     """Thin wrapper around load_list, kept module-level so it pickles cleanly
     for asyncio's run_in_executor (older 3.x quirks aside)."""
-    return load_list(source, base_dir, sha256=sha256, prev_etag=prev_etag)
+    return load_list(source, base_dir, sha256=sha256, prev_etag=prev_etag, api_key=api_key)
 
 
 class TunnelApp:
@@ -94,6 +125,7 @@ class TunnelApp:
                 self.base_dir,
                 self.config.list_sha256,
                 prev_etag,
+                self.config.list_api_key,
             )
         except Exception as e:
             self.log.error(f"Failed to load route list: {e}")
@@ -115,6 +147,7 @@ class TunnelApp:
                     self.base_dir,
                     self.config.list_sha256,
                     None,
+                    self.config.list_api_key,
                 )
             except Exception as e:
                 self.log.error(f"Failed to refetch route list: {e}")
@@ -196,6 +229,8 @@ class TunnelApp:
                 f"({failed_total} failed, "
                 f"{len(desired) - added_total - failed_total} unchanged)"
             )
+            if self.config.grey_api_url and new_list:
+                asyncio.create_task(self._probe_and_report(new_list))
         else:
             self.log.info("No new routes to add (already synced)")
 
@@ -211,6 +246,30 @@ class TunnelApp:
             vpn_backend=self.backend.name(),
             list_etag=new_etag,
         )
+
+    async def _probe_and_report(self, routes: list[str]) -> None:
+        """Probe newly added routes via HTTP; report non-200 to grey list."""
+        loop = asyncio.get_event_loop()
+        sem = asyncio.Semaphore(10)
+
+        async def probe_one(cidr: str) -> None:
+            ip = cidr.split("/")[0]
+            async with sem:
+                code = await loop.run_in_executor(None, _http_probe, ip)
+            if code != 200:
+                reason = f"HTTP {code}" if code else "недоступен"
+                await loop.run_in_executor(
+                    None, _report_grey,
+                    self.config.grey_api_url, self.config.grey_api_key, cidr, reason
+                )
+                self.log.debug(f"grey list: {cidr} → {reason}")
+
+        # Only probe host routes (/32) — probing subnets makes no sense
+        host_routes = [r for r in routes if r.endswith("/32") or "/" not in r][:100]
+        if not host_routes:
+            return
+        self.log.info(f"Probing {len(host_routes)} new routes for grey list...")
+        await asyncio.gather(*[probe_one(r) for r in host_routes], return_exceptions=True)
 
     def _log_failure_summary(self, failures: list[tuple[str, str]]) -> None:
         if not failures:
