@@ -75,6 +75,21 @@ class LinuxBackend(RouteBackend):
             vpn.local_gateway = isp_gw
             vpn.local_interface = isp_if
             return vpn
+
+        # No default route via VPN: tunnel_manager may have already replaced it
+        # with specific routes. Fall back to any UP VPN-like interface.
+        try:
+            links = subprocess.check_output(["ip", "link"], text=True)
+        except subprocess.CalledProcessError:
+            return None
+        for line in links.splitlines():
+            m = re.search(r"^\d+: (\S+?)[@:]", line)
+            if not m:
+                continue
+            iface = m.group(1)
+            if self.VPN_IFACE_RE.match(iface) and ("UP" in line or "LOWER_UP" in line):
+                return VPNInfo(interface=iface, gateway=None,
+                               local_gateway=isp_gw, local_interface=isp_if)
         return None
 
     # ── default route mgmt ─────────────────────────────────────────────
