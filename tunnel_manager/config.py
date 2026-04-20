@@ -12,13 +12,23 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
+DB_ROUTES_URL = "http://localhost/api/routes"
+
+
 @dataclass
 class Config:
     list_url: str = "tunnel_list.txt"
+    list_source: str = "file"   # "file" or "db"
     list_sha256: str | None = None
     refresh_interval_hours: int = 24
     watchdog_interval_seconds: int = 15
     heartbeat_interval_seconds: int = 30
+
+    def effective_list_url(self) -> str:
+        """Return the URL/path to fetch the route list from."""
+        if self.list_source == "db":
+            return DB_ROUTES_URL
+        return self.list_url
 
     _path: Path | None = field(default=None, repr=False, compare=False)
     _mtime: float = field(default=0.0, repr=False, compare=False)

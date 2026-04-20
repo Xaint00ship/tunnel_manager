@@ -90,7 +90,7 @@ class TunnelApp:
             raw, new_etag = await loop.run_in_executor(
                 None,
                 _fetch_with_etag,
-                self.config.list_url,
+                self.config.effective_list_url(),
                 self.base_dir,
                 self.config.list_sha256,
                 prev_etag,
@@ -111,7 +111,7 @@ class TunnelApp:
                 raw, new_etag = await loop.run_in_executor(
                     None,
                     _fetch_with_etag,
-                    self.config.list_url,
+                    self.config.effective_list_url(),
                     self.base_dir,
                     self.config.list_sha256,
                     None,
