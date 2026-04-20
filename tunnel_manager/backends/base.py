@@ -56,3 +56,7 @@ class RouteBackend(ABC):
     @abstractmethod
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         """All routes on the VPN interface except the catch-all defaults."""
+
+    def is_interface_up(self, iface: str) -> bool:
+        """Return True if the named interface exists and is UP. Override per platform."""
+        return False

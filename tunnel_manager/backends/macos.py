@@ -125,6 +125,13 @@ class MacOSBackend(RouteBackend):
                 ["route", "delete", family, flag, entry, "-interface", info.interface]
             )
 
+    def is_interface_up(self, iface: str) -> bool:
+        try:
+            out = subprocess.check_output(["ifconfig", iface], text=True, stderr=subprocess.DEVNULL)
+            return "status: active" in out or "flags=" in out
+        except subprocess.CalledProcessError:
+            return False
+
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         routes: list[str] = []
         for family_flag in ("inet", "inet6"):

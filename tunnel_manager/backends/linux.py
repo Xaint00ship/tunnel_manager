@@ -138,6 +138,13 @@ class LinuxBackend(RouteBackend):
             cmds = [f"route del {self._normalize(e)} dev {info.interface}" for e in group]
             self._sudo_ip_batch(fam, cmds)
 
+    def is_interface_up(self, iface: str) -> bool:
+        try:
+            out = subprocess.check_output(["ip", "link", "show", iface], text=True)
+            return "state UP" in out or "LOWER_UP" in out
+        except subprocess.CalledProcessError:
+            return False
+
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         routes: list[str] = []
         for fam in ("-4", "-6"):

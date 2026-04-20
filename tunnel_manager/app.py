@@ -255,6 +255,13 @@ class TunnelApp:
                 self.log.info("VPN reconnected — rebuilding tunnel...")
                 await self._setup_tunnel()
             elif not connected and was:
+                # detect_vpn looks for a default route; after we replace it with
+                # specific routes that route is gone — verify the interface itself
+                # is still up before declaring the VPN disconnected.
+                if self.vpn_info and await loop.run_in_executor(
+                    None, self.backend.is_interface_up, self.vpn_info.interface
+                ):
+                    continue
                 self.vpn_connected = False
                 self.status_line = "VPN disconnected"
                 self.log.warning("VPN disconnected.")
