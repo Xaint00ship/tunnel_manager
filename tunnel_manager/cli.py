@@ -148,7 +148,7 @@ def _self_test(config_path: Path) -> int:
 
     def _load_list():
         assert cfg is not None
-        content, _ = load_list(cfg.effective_list_url(), list_search_dir(), cfg.list_sha256)
+        content, _ = load_list(cfg.effective_list_url(), list_search_dir(), cfg.list_sha256, api_key=cfg.list_api_key)
         if content is None:
             return "304 (cached)"
         sections = parse_route_list(content)
@@ -173,7 +173,7 @@ def _update_list(url: str, config_path: Path) -> int:
     dest = USER_DATA_DIR / "tunnel_list.txt"
     log.info(f"Downloading list from {url}...")
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "tunnel_manager"})
+        req = urllib.request.Request(url, headers={"User-Agent": f"tunnel_manager/{__version__}"})
         with urllib.request.urlopen(req, timeout=30) as r:
             data = r.read()
     except Exception as e:
@@ -241,7 +241,7 @@ def main() -> int:
 
     if args.compute_sha:
         try:
-            print(compute_sha256(cfg.effective_list_url(), list_search_dir()))
+            print(compute_sha256(cfg.effective_list_url(), list_search_dir(), cfg.list_api_key))
         except Exception as e:
             log.error(f"Could not compute SHA-256: {e}")
             return 1

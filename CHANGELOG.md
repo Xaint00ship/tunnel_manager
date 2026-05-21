@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- `list_api_key` for `list_source: "db"` now works (X-Api-Key header sent in fetcher).
+- Windows: false "VPN disconnected" after default route removal (added real `is_interface_up` via Get-NetAdapter). This was the root cause of needing restarts to recover the split tunnel.
+- PowerShell and netsh operations now have proper timeouts (SUBPROCESS_TIMEOUT / BATCH_TIMEOUT) to prevent the manager from hanging.
+
+### Added
+- TUI now shows live progress while adding routes (`Adding routes... 142/387`).
+- Async netsh helper (`_async_netsh`) in Windows backend as foundation for full asyncio subprocess migration.
+
+### Changed
+- **Major Windows performance improvement**: route add/remove/default operations switched from PowerShell (`New-NetRoute` etc.) to native `netsh` (much lighter and faster process spawning).
+- All HTTP requests now use dynamic `User-Agent: tunnel_manager/{version}`.
+- `detect_vpn` results are cached for 5 seconds to reduce expensive system calls (Get-NetRoute / netstat / ip route).
+- Watchdog now uses exponential backoff on repeated VPN detection failures.
+- Advanced/internal parameters (`list_source`, `list_api_key`, `grey_api_*`) are now documented as dashboard-only features.
+- Centralized timeout constants in `backends/base.py`.
+- Import sorting and minor lint fixes applied across the codebase.
+
 ## [0.4.0] — 2026-04-18
 
 ### Added

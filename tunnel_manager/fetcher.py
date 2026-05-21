@@ -12,6 +12,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import __version__
+
 
 def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
@@ -28,6 +30,7 @@ def load_list(
     sha256: str | None = None,
     timeout: int = 15,
     prev_etag: str | None = None,
+    api_key: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Load the route list.
 
@@ -43,8 +46,10 @@ def load_list(
 
     if _is_url(source):
         req = urllib.request.Request(
-            source, headers={"User-Agent": "tunnel_manager/0.4"}
+            source, headers={"User-Agent": f"tunnel_manager/{__version__}"}
         )
+        if api_key:
+            req.add_header("X-Api-Key", api_key)
         if prev_etag:
             req.add_header("If-None-Match", prev_etag)
         try:
@@ -67,8 +72,8 @@ def load_list(
     return raw.decode("utf-8"), new_etag
 
 
-def compute_sha256(source: str, base_dir: Path) -> str:
-    content, _ = load_list(source, base_dir)
+def compute_sha256(source: str, base_dir: Path, api_key: str | None = None) -> str:
+    content, _ = load_list(source, base_dir, api_key=api_key)
     if content is None:
         raise RuntimeError(f"Source {source} returned no content")
     return hashlib.sha256(content.encode("utf-8")).hexdigest()

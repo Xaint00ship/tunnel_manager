@@ -1,19 +1,20 @@
-"""Windows route backend — PowerShell with batched operations.
+"""Windows route backend — netsh for fast add/remove, PowerShell for detection.
 
-Detects the VPN by scoring 0.0.0.0/0 routes (point-to-point next hop, RAS
-adapters, VPN-keyword interface descriptions). Adds/removes routes in
-chunks of 200 per PowerShell invocation, both IPv4 and IPv6.
+Detects via Get-Net* (scored), adds/removes via netsh (much lighter than PS).
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ctypes
 import json
+import os
 import subprocess
+import tempfile
 
 from ..parser import address_family
-from .base import AddResult, RouteBackend, VPNInfo
+from .base import BATCH_TIMEOUT, SUBPROCESS_TIMEOUT, AddResult, RouteBackend, VPNInfo
 
 _CHUNK = 200
 
@@ -39,13 +40,53 @@ class WindowsBackend(RouteBackend):
     # ── helpers ────────────────────────────────────────────────────────
 
     def _ps(self, script: str) -> str:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True,
-        )
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("PowerShell timeout after 30s") from None
         if r.returncode != 0:
             raise RuntimeError(f"PowerShell error: {r.stderr.strip() or r.stdout.strip()}")
         return r.stdout.strip()
+
+    def _netsh_batch(self, lines: list[str]) -> tuple[int, str]:
+        if not lines:
+            return 0, ""
+        fd, path = tempfile.mkstemp(suffix=".netsh", text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            r = subprocess.run(
+                ["netsh", "-f", path],
+                capture_output=True, text=True, timeout=BATCH_TIMEOUT
+            )
+            return r.returncode, (r.stderr or r.stdout).strip()
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    async def _async_netsh(self, args: list[str]) -> subprocess.CompletedProcess:
+        proc = await asyncio.create_subprocess_exec(
+            "netsh", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=SUBPROCESS_TIMEOUT
+            )
+            return subprocess.CompletedProcess(
+                ["netsh", *args],
+                proc.returncode or 0,
+                stdout.decode(errors="replace") if stdout else "",
+                stderr.decode(errors="replace") if stderr else ""
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError("netsh timeout") from None
 
     @staticmethod
     def _normalize(entry: str) -> str:
@@ -117,13 +158,10 @@ class WindowsBackend(RouteBackend):
     # ── default route mgmt ─────────────────────────────────────────────
 
     def remove_default_vpn_route(self, info: VPNInfo) -> None:
-        for prefix in ("0.0.0.0/0", "::/0"):
-            with contextlib.suppress(RuntimeError):
-                self._ps(
-                    f"Remove-NetRoute -InterfaceIndex {info.interface} "
-                    f"-DestinationPrefix '{prefix}' -Confirm:$false "
-                    f"-ErrorAction SilentlyContinue"
-                )
+        for prefix, fam in (("0.0.0.0/0", "ipv4"), ("::/0", "ipv6")):
+            args = ["interface", fam, "delete", "route", f"prefix={prefix}", f"interface={info.interface}"]
+            with contextlib.suppress(Exception):
+                subprocess.run(["netsh", *args], capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT)
 
     # ── bulk add/remove ────────────────────────────────────────────────
 
@@ -140,63 +178,32 @@ class WindowsBackend(RouteBackend):
     def _add_chunk(
         self, chunk: list[str], info: VPNInfo
     ) -> tuple[list[str], list[tuple[str, str]]]:
-        # Each entry carries its own NextHop because chunks may mix v4/v6.
-        items = []
+        added: list[str] = []
+        failed: list[tuple[str, str]] = []
         for e in chunk:
             prefix = self._normalize(e)
             nh = self._next_hop_for(prefix, info)
-            items.append(f"@{{Prefix='{prefix}'; NextHop='{nh}'}}")
-        ps_list = ",".join(items)
-        script = (
-            f"$items = @({ps_list}); "
-            f"$results = foreach ($it in $items) {{ "
-            f"  try {{ "
-            f"    $null = New-NetRoute -DestinationPrefix $it.Prefix "
-            f"      -InterfaceIndex {info.interface} -NextHop $it.NextHop "
-            f"      -PolicyStore ActiveStore -ErrorAction Stop; "
-            f"    [PSCustomObject]@{{ Prefix=$it.Prefix; Ok=$true; Error='' }} "
-            f"  }} catch {{ "
-            f"    $msg = $_.Exception.Message; "
-            f"    $ok = $msg -match 'already exists'; "
-            f"    [PSCustomObject]@{{ Prefix=$it.Prefix; Ok=$ok; Error=$msg }} "
-            f"  }} "
-            f"}}; "
-            f"$results | ConvertTo-Json -Compress -Depth 2"
-        )
-        try:
-            out = self._ps(script)
-        except RuntimeError as e:
-            return [], [(orig, str(e)) for orig in chunk]
-        if not out:
-            return [], [(orig, "no output") for orig in chunk]
-        data = json.loads(out)
-        if isinstance(data, dict):
-            data = [data]
-        added, failed = [], []
-        for r, orig in zip(data, chunk, strict=False):
-            if r.get("Ok"):
-                added.append(orig)
+            fam = "ipv4" if address_family(prefix.split("/")[0]) == 4 else "ipv6"
+            args = ["interface", fam, "add", "route", f"prefix={prefix}", f"interface={info.interface}"]
+            if nh not in ("0.0.0.0", "::"):
+                args += [f"next-hop={nh}"]
+            r = subprocess.run(["netsh", *args], capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT)
+            out = (r.stderr or r.stdout or "").lower()
+            if r.returncode == 0 or "already exists" in out:
+                added.append(e)
             else:
-                failed.append((orig, (r.get("Error") or "unknown").strip()))
+                failed.append((e, (r.stderr or "netsh failed").strip()))
         return added, failed
 
     def remove_routes(self, entries: list[str], info: VPNInfo) -> None:
         if not entries:
             return
-        for i in range(0, len(entries), _CHUNK):
-            chunk = entries[i : i + _CHUNK]
-            prefixes = [self._normalize(e) for e in chunk]
-            ps_list = ",".join(f"'{p}'" for p in prefixes)
-            script = (
-                f"$prefixes = @({ps_list}); "
-                f"foreach ($p in $prefixes) {{ "
-                f"  Remove-NetRoute -DestinationPrefix $p "
-                f"    -InterfaceIndex {info.interface} "
-                f"    -Confirm:$false -ErrorAction SilentlyContinue "
-                f"}}"
-            )
-            with contextlib.suppress(RuntimeError):
-                self._ps(script)
+        for e in entries:
+            prefix = self._normalize(e)
+            fam = "ipv4" if address_family(prefix.split("/")[0]) == 4 else "ipv6"
+            args = ["interface", fam, "delete", "route", f"prefix={prefix}", f"interface={info.interface}"]
+            with contextlib.suppress(Exception):
+                subprocess.run(["netsh", *args], capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT)
 
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         script = (
@@ -211,3 +218,13 @@ class WindowsBackend(RouteBackend):
         except RuntimeError:
             return []
         return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def is_interface_up(self, iface: str) -> bool:
+        try:
+            out = self._ps(
+                f"$a = Get-NetAdapter -InterfaceIndex {iface} -ErrorAction SilentlyContinue; "
+                f"if ($a) {{ ($a.Status -eq 'Up') }} else {{ $false }}"
+            )
+            return out.strip().lower() == "true"
+        except RuntimeError:
+            return False

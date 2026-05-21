@@ -138,6 +138,8 @@ State is persisted at the platform-native location (`~/.local/state/tunnel_manag
 | `watchdog_interval_seconds` | `15` | VPN reconnect polling interval. |
 | `heartbeat_interval_seconds` | `30` | How often to update the state file's liveness marker. |
 
+Advanced/internal parameters (`list_source`, `list_api_key`, `grey_api_*`) are for custom dashboard integrations and not recommended for general use.
+
 The config is **hot-reloaded**: edit `config.json` while the manager is running and the new values take effect within ~10 seconds — no restart needed.
 
 `tunnel_list.txt` ships inside the package so the tool works offline. Resolution priority for relative `list_url`:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import urllib.error
@@ -30,8 +31,10 @@ def _http_probe(ip: str, timeout: int = 3) -> int:
         return 0
 
 
-def _report_grey(base_url: str, api_key: str | None, ip: str, reason: str) -> None:
+def _report_grey(base_url: str | None, api_key: str | None, ip: str, reason: str) -> None:
     """POST ip to dashboard grey list report endpoint."""
+    if base_url is None:
+        return
     payload = json.dumps({"ip": ip, "reason": reason}).encode()
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}/api/analytics/grey-list/report",
@@ -41,10 +44,8 @@ def _report_grey(base_url: str, api_key: str | None, ip: str, reason: str) -> No
     )
     if api_key:
         req.add_header("X-Api-Key", api_key)
-    try:
+    with contextlib.suppress(Exception):
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
 
 
 def _fetch_with_etag(
@@ -83,14 +84,25 @@ class TunnelApp:
         self.status_line = "Initializing..."
         self.running = False
         self._cached_list_content: str | None = None
+        self._bg_tasks: list = []
+        self._last_detect: float = 0.0
+        self._last_vpn_info: VPNInfo | None = None
+        self._detect_failures: int = 0
 
-    # ── lifecycle ───────────────────────────────────────────────────────
+    async def _detect_vpn(self) -> VPNInfo | None:
+        now = time.time()
+        if now - self._last_detect < 5 and self._last_vpn_info is not None:
+            return self._last_vpn_info
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, self.backend.detect_vpn)
+        self._last_detect = now
+        self._last_vpn_info = info
+        return info
 
     async def start(self) -> None:
-        loop = asyncio.get_event_loop()
         self.log.info("Starting VPN Split Tunnel Manager...")
         self.log.info("Detecting VPN interface...")
-        info = await loop.run_in_executor(None, self.backend.detect_vpn)
+        info = await self._detect_vpn()
         if info is None:
             self.log.warning(
                 "VPN not detected. Watchdog will pick it up on reconnect."
@@ -222,6 +234,7 @@ class TunnelApp:
                 added_total += result.count
                 failed_total += result.failure_count
                 failures.extend(result.failed)
+                self.status_line = f"Adding routes... {added_total}/{len(new_list)}"
 
             self._log_failure_summary(failures)
             self.log.info(
@@ -230,7 +243,7 @@ class TunnelApp:
                 f"{len(desired) - added_total - failed_total} unchanged)"
             )
             if self.config.grey_api_url and new_list:
-                asyncio.create_task(self._probe_and_report(new_list))
+                self._bg_tasks.append(asyncio.create_task(self._probe_and_report(new_list)))
         else:
             self.log.info("No new routes to add (already synced)")
 
@@ -303,9 +316,13 @@ class TunnelApp:
             await asyncio.sleep(interval)
             was = self.vpn_connected
             try:
-                info = await loop.run_in_executor(None, self.backend.detect_vpn)
+                info = await self._detect_vpn()
+                self._detect_failures = 0
             except Exception as e:
-                self.log.debug(f"watchdog detect failed: {e}")
+                self._detect_failures += 1
+                backoff = min(60, 2 ** self._detect_failures)
+                self.log.debug(f"watchdog detect failed: {e}, backoff {backoff}s")
+                await asyncio.sleep(backoff)
                 continue
             connected = info is not None
             if connected and not was:
@@ -314,13 +331,12 @@ class TunnelApp:
                 self.log.info("VPN reconnected — rebuilding tunnel...")
                 await self._setup_tunnel()
             elif not connected and was:
-                # detect_vpn looks for a default route; after we replace it with
-                # specific routes that route is gone — verify the interface itself
-                # is still up before declaring the VPN disconnected.
-                if self.vpn_info and await loop.run_in_executor(
-                    None, self.backend.is_interface_up, self.vpn_info.interface
-                ):
-                    continue
+                if self.vpn_info:
+                    iface = self.vpn_info.interface
+                    if await loop.run_in_executor(
+                        None, self.backend.is_interface_up, iface
+                    ):
+                        continue
                 self.vpn_connected = False
                 self.status_line = "VPN disconnected"
                 self.log.warning("VPN disconnected.")

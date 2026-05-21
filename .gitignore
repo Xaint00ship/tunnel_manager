@@ -15,3 +15,6 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Local planning notes for future optimization iterations (not committed)
+TODO-remaining.md
