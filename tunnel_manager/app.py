@@ -51,8 +51,7 @@ def _report_grey(base_url: str | None, api_key: str | None, ip: str, reason: str
 def _fetch_with_etag(
     source: str, base_dir, sha256, prev_etag, api_key=None
 ) -> tuple[str | None, str | None]:
-    """Thin wrapper around load_list, kept module-level so it pickles cleanly
-    for asyncio's run_in_executor (older 3.x quirks aside)."""
+    """Thin wrapper around load_list for thread offloading."""
     return load_list(source, base_dir, sha256=sha256, prev_etag=prev_etag, api_key=api_key)
 
 
@@ -80,6 +79,9 @@ class TunnelApp:
         self.sections: dict[str, int] = {}
         self.active_routes: set[str] = set()
         self.total_routes = 0
+        self.route_progress_done = 0
+        self.route_progress_total = 0
+        self.route_progress_percent = 0
         self.last_updated: float | None = None
         self.status_line = "Initializing..."
         self.running = False
@@ -88,39 +90,57 @@ class TunnelApp:
         self._last_detect: float = 0.0
         self._last_vpn_info: VPNInfo | None = None
         self._detect_failures: int = 0
+        self._watchdog_circuit_until: float = 0.0
+        self._persistent_warning_logged = False
 
     async def _detect_vpn(self) -> VPNInfo | None:
         now = time.time()
         if now - self._last_detect < 5 and self._last_vpn_info is not None:
+            self._apply_configured_vpn_options(self._last_vpn_info)
             return self._last_vpn_info
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, self.backend.detect_vpn)
+        info = await self.backend.detect_vpn_async()
+        if info is not None:
+            self._apply_configured_vpn_options(info)
         self._last_detect = now
         self._last_vpn_info = info
         return info
+
+    def _apply_configured_vpn_options(self, info: VPNInfo) -> None:
+        if self.config.vpn_interface and info.interface != self.config.vpn_interface:
+            self.log.info(
+                f"Using configured VPN interface {self.config.vpn_interface} "
+                f"(detected {info.interface})"
+            )
+            info.interface = self.config.vpn_interface
+        info.persistent_routes = self.config.persistent_routes
+        if (
+            info.persistent_routes
+            and not self.backend.supports_persistent_routes()
+            and not self._persistent_warning_logged
+        ):
+            self.log.warning(
+                f"Persistent routes are not supported by {self.backend.name()} backend; "
+                "routes will be active for this session only."
+            )
+            self._persistent_warning_logged = True
 
     async def start(self) -> None:
         self.log.info("Starting VPN Split Tunnel Manager...")
         self.log.info("Detecting VPN interface...")
         info = await self._detect_vpn()
         if info is None:
-            self.log.warning(
-                "VPN not detected. Watchdog will pick it up on reconnect."
-            )
+            self.log.warning("VPN not detected. Watchdog will pick it up on reconnect.")
             self.status_line = "VPN disconnected"
             self.vpn_connected = False
         else:
             self.vpn_info = info
             self.vpn_connected = True
-            self.log.info(
-                f"VPN: {info.describe()}  |  ISP: {info.local_gateway or '—'}"
-            )
-            await self._setup_tunnel()
+            self.log.info(f"VPN: {info.describe()}  |  ISP: {info.local_gateway or '—'}")
+            await self._setup_tunnel(force_apply=True)
         self.running = True
 
-    async def _setup_tunnel(self) -> None:
+    async def _setup_tunnel(self, force_apply: bool = False) -> None:
         """Rebuild the split tunnel: load list, compute diff, apply."""
-        loop = asyncio.get_event_loop()
         assert self.vpn_info is not None
         info = self.vpn_info
 
@@ -128,10 +148,12 @@ class TunnelApp:
         #    leave the user with a torn-down default route. ETag lets us
         #    skip the diff entirely when the source hasn't changed.
         self.status_line = "Loading list..."
+        self.route_progress_done = 0
+        self.route_progress_total = 0
+        self.route_progress_percent = 0
         prev_etag = self.state.data.get("list_etag")
         try:
-            raw, new_etag = await loop.run_in_executor(
-                None,
+            raw, new_etag = await asyncio.to_thread(
                 _fetch_with_etag,
                 self.config.effective_list_url(),
                 self.base_dir,
@@ -145,15 +167,17 @@ class TunnelApp:
             return
 
         if raw is None and self._cached_list_content is not None:
-            self.log.info("Route list unchanged (304) — skipping diff.")
-            self.status_line = "Active"
-            return
+            if not force_apply:
+                self.log.info("Route list unchanged (304) — skipping diff.")
+                self.status_line = "Active"
+                return
+            self.log.info("Route list unchanged (304) — reapplying cached list.")
+            raw = self._cached_list_content
         if raw is None:
             # 304 but no in-memory cache (first run after restart) — refetch unconditionally.
             self.log.debug("304 with empty cache; refetching without ETag")
             try:
-                raw, new_etag = await loop.run_in_executor(
-                    None,
+                raw, new_etag = await asyncio.to_thread(
                     _fetch_with_etag,
                     self.config.effective_list_url(),
                     self.base_dir,
@@ -170,29 +194,21 @@ class TunnelApp:
         parsed: set[str] = set()
         for entries in sections.values():
             parsed.update(entries)
-        self.log.info(
-            f"Parsed {len(parsed)} entries across {len(sections)} services"
-        )
+        self.log.info(f"Parsed {len(parsed)} entries across {len(sections)} services")
 
         # Aggregate: 700 entries → ~200 CIDRs, fewer route operations.
         desired: set[str] = set(collapse_routes(list(parsed)))
         if len(desired) < len(parsed):
-            self.log.info(
-                f"Aggregated {len(parsed)} entries → {len(desired)} CIDRs"
-            )
+            self.log.info(f"Aggregated {len(parsed)} entries → {len(desired)} CIDRs")
 
         # 2. Now snip the catch-all default.
         self.log.info("Removing catch-all VPN default route...")
         if not self.dry_run:
-            await loop.run_in_executor(
-                None, self.backend.remove_default_vpn_route, info
-            )
+            await self.backend.remove_default_vpn_route_async(info)
 
         # 3. Diff against existing + previously-recorded routes.
         try:
-            existing = set(
-                await loop.run_in_executor(None, self.backend.list_vpn_routes, info)
-            )
+            existing = set(await self.backend.list_vpn_routes_async(info))
         except Exception as e:
             self.log.debug(f"list_vpn_routes failed: {e}")
             existing = set()
@@ -212,29 +228,33 @@ class TunnelApp:
 
         if stale:
             self.log.info(f"Removing {len(stale)} stale routes...")
+            self.status_line = f"Removing stale routes... 0/{len(stale)} (0%)"
             if not self.dry_run:
-                await loop.run_in_executor(
-                    None, self.backend.remove_routes, list(stale), info
-                )
+                await self.backend.remove_routes_async(list(stale), info)
+            self.status_line = f"Removing stale routes... {len(stale)}/{len(stale)} (100%)"
 
         added_total = failed_total = 0
         if new:
             self.log.info(f"Adding {len(new)} routes...")
-            self.status_line = "Adding routes..."
+            self.status_line = f"Adding routes... 0/{len(new)} (0%)"
             new_list = list(new)
+            self.route_progress_total = len(new_list)
             failures: list[tuple[str, str]] = []
             for i in range(0, len(new_list), self.CHUNK_SIZE):
                 chunk = new_list[i : i + self.CHUNK_SIZE]
                 if self.dry_run:
                     added_total += len(chunk)
-                    continue
-                result: AddResult = await loop.run_in_executor(
-                    None, self.backend.add_routes, chunk, info
+                else:
+                    result: AddResult = await self.backend.add_routes_async(chunk, info)
+                    added_total += result.count
+                    failed_total += result.failure_count
+                    failures.extend(result.failed)
+                attempted = min(i + len(chunk), len(new_list))
+                self.route_progress_done = attempted
+                self.route_progress_percent = int(attempted * 100 / len(new_list))
+                self.status_line = (
+                    f"Adding routes... {attempted}/{len(new_list)} ({self.route_progress_percent}%)"
                 )
-                added_total += result.count
-                failed_total += result.failure_count
-                failures.extend(result.failed)
-                self.status_line = f"Adding routes... {added_total}/{len(new_list)}"
 
             self._log_failure_summary(failures)
             self.log.info(
@@ -251,6 +271,9 @@ class TunnelApp:
         self.total_routes = len(desired)
         self.sections = {name: len(entries) for name, entries in sections.items()}
         self.last_updated = time.time()
+        self.route_progress_done = 0
+        self.route_progress_total = 0
+        self.route_progress_percent = 0
         self.status_line = "Active" + (" (dry-run)" if self.dry_run else "")
         self.state.save(
             active_routes=sorted(desired),
@@ -262,18 +285,16 @@ class TunnelApp:
 
     async def _probe_and_report(self, routes: list[str]) -> None:
         """Probe newly added routes via HTTP; report non-200 to grey list."""
-        loop = asyncio.get_event_loop()
         sem = asyncio.Semaphore(10)
 
         async def probe_one(cidr: str) -> None:
             ip = cidr.split("/")[0]
             async with sem:
-                code = await loop.run_in_executor(None, _http_probe, ip)
+                code = await asyncio.to_thread(_http_probe, ip)
             if code != 200:
                 reason = f"HTTP {code}" if code else "недоступен"
-                await loop.run_in_executor(
-                    None, _report_grey,
-                    self.config.grey_api_url, self.config.grey_api_key, cidr, reason
+                await asyncio.to_thread(
+                    _report_grey, self.config.grey_api_url, self.config.grey_api_key, cidr, reason
                 )
                 self.log.debug(f"grey list: {cidr} → {reason}")
 
@@ -310,18 +331,31 @@ class TunnelApp:
             await self._setup_tunnel()
 
     async def worker_watchdog(self) -> None:
-        loop = asyncio.get_event_loop()
         while self.running:
             interval = max(5, self.config.watchdog_interval_seconds)
             await asyncio.sleep(interval)
+            if time.time() < self._watchdog_circuit_until:
+                remaining = int(self._watchdog_circuit_until - time.time())
+                self.status_line = f"VPN detect paused ({remaining}s)"
+                continue
             was = self.vpn_connected
             try:
                 info = await self._detect_vpn()
                 self._detect_failures = 0
+                self._watchdog_circuit_until = 0.0
             except Exception as e:
                 self._detect_failures += 1
-                backoff = min(60, 2 ** self._detect_failures)
+                backoff = min(60, 2**self._detect_failures)
                 self.log.debug(f"watchdog detect failed: {e}, backoff {backoff}s")
+                if self._detect_failures >= self.config.watchdog_failure_threshold:
+                    cooldown = self.config.watchdog_circuit_breaker_seconds
+                    if cooldown > 0:
+                        self._watchdog_circuit_until = time.time() + cooldown
+                        self.status_line = f"VPN detect paused ({cooldown}s)"
+                        self.log.warning(
+                            f"VPN detection failed {self._detect_failures} times; "
+                            f"pausing detection for {cooldown}s."
+                        )
                 await asyncio.sleep(backoff)
                 continue
             connected = info is not None
@@ -329,13 +363,11 @@ class TunnelApp:
                 self.vpn_info = info
                 self.vpn_connected = True
                 self.log.info("VPN reconnected — rebuilding tunnel...")
-                await self._setup_tunnel()
+                await self._setup_tunnel(force_apply=True)
             elif not connected and was:
                 if self.vpn_info:
                     iface = self.vpn_info.interface
-                    if await loop.run_in_executor(
-                        None, self.backend.is_interface_up, iface
-                    ):
+                    if await self.backend.is_interface_up_async(iface):
                         continue
                 self.vpn_connected = False
                 self.status_line = "VPN disconnected"
@@ -371,11 +403,8 @@ class TunnelApp:
         if self.dry_run:
             self.log.info(f"[dry-run] would remove {len(routes)} routes")
             return
-        loop = asyncio.get_event_loop()
         self.log.info(f"Removing {len(routes)} routes...")
-        await loop.run_in_executor(
-            None, self.backend.remove_routes, routes, self.vpn_info
-        )
+        await self.backend.remove_routes_async(routes, self.vpn_info)
         self.state.clear()
         self.log.info("Cleanup complete.")
 
