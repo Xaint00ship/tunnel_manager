@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from tunnel_manager.app import TunnelApp
@@ -23,6 +25,7 @@ def make_app(mock_backend, tmp_path, list_file):
             base_dir=tmp_path,
             dry_run=dry_run,
         )
+
     return _make
 
 
@@ -51,7 +54,7 @@ async def test_diff_only_adds_new_and_removes_stale(make_app, mock_vpn):
         added.update(c[1][0])
     for c in rm_calls:
         removed.update(c[1][0])
-    assert "1.1.1.1/32" not in added             # already exists
+    assert "1.1.1.1/32" not in added  # already exists
     assert {"2.2.2.0/24", "3.3.3.3/32"} <= added
     assert "9.9.9.9/32" in removed
 
@@ -61,9 +64,9 @@ async def test_dry_run_skips_route_writes(make_app, mock_backend):
     app = make_app(dry_run=True)
     await app.start()
     add_calls = [c for c in mock_backend.calls if c[0] == "add_routes"]
-    assert add_calls == []                       # never invoked
+    assert add_calls == []  # never invoked
     assert mock_backend.routes == set()
-    assert app.total_routes == 3                 # but desired set still computed
+    assert app.total_routes == 3  # but desired set still computed
 
 
 @pytest.mark.asyncio
@@ -73,8 +76,11 @@ async def test_load_failure_does_not_touch_routing(make_app, mock_backend, tmp_p
     app = TunnelApp(mock_backend, cfg, state, tmp_path)
     await app.start()
     # detect_vpn was called once during start; nothing else.
-    op_calls = [c for c in mock_backend.calls
-                if c[0] in ("remove_default_vpn_route", "add_routes", "remove_routes")]
+    op_calls = [
+        c
+        for c in mock_backend.calls
+        if c[0] in ("remove_default_vpn_route", "add_routes", "remove_routes")
+    ]
     assert op_calls == []
     assert app.status_line == "Load failed"
 
@@ -87,9 +93,35 @@ async def test_no_vpn_detected_skips_setup(make_app, mock_vpn, tmp_path, list_fi
     app = TunnelApp(backend, cfg, state, tmp_path)
     await app.start()
     assert app.vpn_connected is False
-    op_calls = [c for c in backend.calls
-                if c[0] in ("add_routes", "remove_default_vpn_route")]
+    op_calls = [c for c in backend.calls if c[0] in ("add_routes", "remove_default_vpn_route")]
     assert op_calls == []
+
+
+@pytest.mark.asyncio
+async def test_force_apply_reuses_cached_list_on_304(monkeypatch, tmp_path, mock_vpn):
+    backend = MockBackend(vpn=mock_vpn)
+    cfg = Config(list_url="https://example.test/list.txt")
+    state = StateFile(tmp_path / "state.json")
+    app = TunnelApp(backend, cfg, state, tmp_path)
+    responses = [
+        ("Meta\n1.1.1.1\n", '"v1"'),
+        (None, '"v1"'),
+    ]
+
+    def fake_fetch(*_args):
+        return responses.pop(0)
+
+    monkeypatch.setattr("tunnel_manager.app._fetch_with_etag", fake_fetch)
+
+    await app.start()
+    backend.calls.clear()
+    backend.routes.clear()
+
+    await app._setup_tunnel(force_apply=True)
+
+    add_calls = [c for c in backend.calls if c[0] == "add_routes"]
+    assert len(add_calls) == 1
+    assert add_calls[0][1][0] == ("1.1.1.1/32",)
 
 
 @pytest.mark.asyncio
@@ -103,6 +135,42 @@ async def test_state_persists_after_setup(make_app, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_configured_vpn_interface_overrides_detected_interface(tmp_path, list_file, mock_vpn):
+    backend = MockBackend(vpn=mock_vpn)
+    cfg = Config(list_url=str(list_file), vpn_interface="77", persistent_routes=True)
+    state = StateFile(tmp_path / "state.json")
+    app = TunnelApp(backend, cfg, state, tmp_path)
+
+    await app.start()
+
+    assert app.vpn_info is not None
+    assert app.vpn_info.interface == "77"
+    assert app.vpn_info.persistent_routes is True
+    assert ("remove_default_vpn_route", ("77",)) in backend.calls
+
+
+@pytest.mark.asyncio
+async def test_setup_can_be_cancelled_during_route_add(make_app, mock_vpn):
+    class SlowAddBackend(MockBackend):
+        async def add_routes_async(self, entries, info):
+            await asyncio.sleep(60)
+            return await super().add_routes_async(entries, info)
+
+    app = make_app(backend=SlowAddBackend(vpn=mock_vpn))
+    app.vpn_info = app.backend.detect_vpn()
+
+    task = asyncio.create_task(app._setup_tunnel(force_apply=True))
+    for _ in range(100):
+        if app.status_line.startswith("Adding routes"):
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_cleanup_uses_state_when_vpn_gone(make_app, tmp_path, mock_vpn):
     app = make_app()
     await app.start()
@@ -113,6 +181,7 @@ async def test_cleanup_uses_state_when_vpn_gone(make_app, tmp_path, mock_vpn):
     app2 = TunnelApp(backend2, cfg, state, tmp_path)
     # Inject a synthetic VPNInfo from state (simulates cli._restore_vpn_info)
     from tunnel_manager.backends.base import VPNInfo
+
     app2.vpn_info = VPNInfo(interface=state.previous_interface() or "?", gateway=None)
     await app2.cleanup()
     # state was cleared
@@ -124,8 +193,11 @@ async def test_cleanup_uses_state_when_vpn_gone(make_app, tmp_path, mock_vpn):
 async def test_failure_aggregation_groups_messages(make_app, mock_vpn, tmp_path, list_file):
     backend = MockBackend(
         vpn=mock_vpn,
-        add_failures={"1.1.1.1": "File exists", "2.2.2.0/24": "File exists",
-                      "3.3.3.3": "Network unreachable"},
+        add_failures={
+            "1.1.1.1": "File exists",
+            "2.2.2.0/24": "File exists",
+            "3.3.3.3": "Network unreachable",
+        },
     )
     cfg = Config(list_url=str(list_file))
     state = StateFile(tmp_path / "state.json")

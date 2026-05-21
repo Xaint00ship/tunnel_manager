@@ -34,9 +34,7 @@ class StateFile:
     def save(self, **fields) -> None:
         self.data.update(fields)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(self.data, indent=2, default=str), encoding="utf-8"
-        )
+        self.path.write_text(json.dumps(self.data, indent=2, default=str), encoding="utf-8")
 
     def heartbeat(self) -> None:
         self.save(heartbeat=int(time.time()))
@@ -66,7 +64,9 @@ class StateFile:
         if not self.is_pid_alive(pid):
             return False
         last = int(self.data.get("heartbeat") or 0)
-        return not (last and (time.time() - last) > HEARTBEAT_TIMEOUT_SECONDS)
+        if not last:
+            return False
+        return time.time() - last <= HEARTBEAT_TIMEOUT_SECONDS
 
     @staticmethod
     def is_pid_alive(pid: int) -> bool:

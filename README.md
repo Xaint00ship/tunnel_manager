@@ -97,6 +97,9 @@ Runs a full-screen Rich TUI dashboard. `Ctrl+C` to stop.
 | `--update-list URL` | Download a fresh list into the user data dir; if `list_sha256` is pinned in config, rotate the pin to match. |
 | `--compute-sha` | Print SHA-256 of the list source (for pinning), then exit. |
 | `--self-test` | Run a diagnostic check (privs, paths, list, VPN) and exit. |
+| `--install-service` | Install and start a system service (systemd, launchd, or NSSM on Windows), then exit. |
+| `--uninstall-service` | Stop and remove the installed system service, then exit. |
+| `--service-name NAME` | Override the service name/label used by install/uninstall. |
 | `-v` / `--verbose` | Debug logging. |
 | `--config PATH` | Use a different `config.json`. |
 
@@ -126,7 +129,11 @@ State is persisted at the platform-native location (`~/.local/state/tunnel_manag
   "list_sha256": null,
   "refresh_interval_hours": 24,
   "watchdog_interval_seconds": 15,
-  "heartbeat_interval_seconds": 30
+  "heartbeat_interval_seconds": 30,
+  "watchdog_failure_threshold": 5,
+  "watchdog_circuit_breaker_seconds": 300,
+  "vpn_interface": null,
+  "persistent_routes": false
 }
 ```
 
@@ -137,6 +144,10 @@ State is persisted at the platform-native location (`~/.local/state/tunnel_manag
 | `refresh_interval_hours` | `24` | How often to re-load the list and re-diff routes. |
 | `watchdog_interval_seconds` | `15` | VPN reconnect polling interval. |
 | `heartbeat_interval_seconds` | `30` | How often to update the state file's liveness marker. |
+| `watchdog_failure_threshold` | `5` | Consecutive VPN detection failures before the watchdog pauses detection. |
+| `watchdog_circuit_breaker_seconds` | `300` | Cooldown after repeated watchdog failures. |
+| `vpn_interface` | `null` | Optional manual VPN interface override (interface name on macOS/Linux, interface index on Windows). |
+| `persistent_routes` | `false` | Ask the backend to create persistent routes when supported. Currently supported by Windows/netsh; other backends warn and use active-session routes. |
 
 Advanced/internal parameters (`list_source`, `list_api_key`, `grey_api_*`) are for custom dashboard integrations and not recommended for general use.
 
@@ -177,7 +188,7 @@ The fetcher honors `If-None-Match` / `ETag` so scheduled refreshes that find an 
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 55 tests
+pytest          # 69 tests + coverage report
 ruff check .    # lint
 mypy tunnel_manager
 pre-commit install   # run ruff + format on every commit
@@ -188,6 +199,15 @@ CI runs the same on every push (Ubuntu / macOS / Windows Ã— Python 3.11/3.12) â€
 ## Running as a service
 
 Templates for systemd (Linux), launchd (macOS) and NSSM (Windows) live in [packaging/](packaging/). Each runs the manager with `--no-tui` so it logs to a file instead of taking over a terminal.
+
+Install from an elevated shell:
+
+```bash
+sudo tunnel-manager --install-service
+tunnel-manager --install-service   # Windows: elevated PowerShell, NSSM on PATH
+```
+
+Remove it later with `--uninstall-service`. Use `--service-repo` and `--service-python` when installing from a non-default source checkout or virtualenv.
 
 ## Troubleshooting
 

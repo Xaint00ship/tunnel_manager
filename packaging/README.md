@@ -2,6 +2,15 @@
 
 Templates for running tunnel_manager as a system service.
 
+The CLI can install or remove these service wrappers directly:
+
+```bash
+tunnel-manager --install-service
+tunnel-manager --uninstall-service
+```
+
+Run from an elevated shell (`sudo` on Linux/macOS, Administrator PowerShell on Windows).
+
 | File | Platform | Notes |
 |------|----------|-------|
 | `systemd/tunnel-manager.service` | Linux | Drop into `/etc/systemd/system/`, edit paths, then `systemctl enable --now tunnel-manager` |

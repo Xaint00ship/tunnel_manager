@@ -15,6 +15,13 @@ def test_load_creates_default_when_missing(tmp_path: Path):
     assert cfg.refresh_interval_hours == 24
 
 
+def test_load_creates_parent_dirs_for_default_config(tmp_path: Path):
+    p = tmp_path / "nested" / "config" / "config.json"
+    cfg = Config.load(p)
+    assert p.exists()
+    assert cfg.list_url == "tunnel_list.txt"
+
+
 def test_load_reads_existing(tmp_path: Path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps({"list_url": "remote.txt", "refresh_interval_hours": 6}))
@@ -34,6 +41,13 @@ def test_validation_rejects_bad_values(tmp_path: Path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps({"watchdog_interval_seconds": 1}))
     with pytest.raises(ValueError, match="watchdog"):
+        Config.load(p)
+
+
+def test_validation_rejects_bad_circuit_breaker_values(tmp_path: Path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"watchdog_failure_threshold": 0}))
+    with pytest.raises(ValueError, match="watchdog_failure_threshold"):
         Config.load(p)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -11,10 +12,11 @@ BATCH_TIMEOUT = 60
 
 @dataclass
 class VPNInfo:
-    interface: str                    # iface name on *nix, ifIndex (as str) on Windows
-    gateway: str | None            # None / "0.0.0.0" / link-layer → "no next hop"
+    interface: str  # iface name on *nix, ifIndex (as str) on Windows
+    gateway: str | None  # None / "0.0.0.0" / link-layer → "no next hop"
     local_gateway: str | None = None
     local_interface: str | None = None
+    persistent_routes: bool = False
 
     def describe(self) -> str:
         s = self.interface
@@ -26,7 +28,7 @@ class VPNInfo:
 @dataclass
 class AddResult:
     added: list[str]
-    failed: list[tuple[str, str]]     # (entry, error message)
+    failed: list[tuple[str, str]]  # (entry, error message)
 
     @property
     def count(self) -> int:
@@ -63,3 +65,31 @@ class RouteBackend(ABC):
     def is_interface_up(self, iface: str) -> bool:
         """Return True if the named interface exists and is UP. Override per platform."""
         return False
+
+    def health_check(self) -> tuple[bool, str]:
+        """Return whether the backend is ready to modify system routes."""
+        if not self.is_privileged():
+            return False, "insufficient privileges"
+        return True, "ok"
+
+    def supports_persistent_routes(self) -> bool:
+        """Whether add_routes can ask the OS to persist routes across reboots."""
+        return False
+
+    async def detect_vpn_async(self) -> VPNInfo | None:
+        return await asyncio.to_thread(self.detect_vpn)
+
+    async def remove_default_vpn_route_async(self, info: VPNInfo) -> None:
+        await asyncio.to_thread(self.remove_default_vpn_route, info)
+
+    async def add_routes_async(self, entries: list[str], info: VPNInfo) -> AddResult:
+        return await asyncio.to_thread(self.add_routes, entries, info)
+
+    async def remove_routes_async(self, entries: list[str], info: VPNInfo) -> None:
+        await asyncio.to_thread(self.remove_routes, entries, info)
+
+    async def list_vpn_routes_async(self, info: VPNInfo) -> list[str]:
+        return await asyncio.to_thread(self.list_vpn_routes, info)
+
+    async def is_interface_up_async(self, iface: str) -> bool:
+        return await asyncio.to_thread(self.is_interface_up, iface)

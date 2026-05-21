@@ -12,7 +12,8 @@ REPO = Path(__file__).resolve().parent.parent
 def _run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(REPO / "main.py"), *args],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -23,6 +24,8 @@ def test_help_runs_clean():
     assert "--dry-run" in r.stdout
     assert "--status" in r.stdout
     assert "--update-list" in r.stdout
+    assert "--install-service" in r.stdout
+    assert "--uninstall-service" in r.stdout
 
 
 def test_version_prints():

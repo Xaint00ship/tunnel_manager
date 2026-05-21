@@ -6,16 +6,35 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-22
+
 ### Fixed
+- Reconnect rebuilds no longer get skipped when an HTTP list source returns `304 Not Modified`; cached list content is reapplied when the tunnel is being rebuilt.
+- First-run config creation now creates the parent config directory before writing `config.json`.
+- Single-instance guard now requires a fresh heartbeat as well as a live PID; stale state with a reused PID no longer blocks startup.
 - `list_api_key` for `list_source: "db"` now works (X-Api-Key header sent in fetcher).
 - Windows: false "VPN disconnected" after default route removal (added real `is_interface_up` via Get-NetAdapter). This was the root cause of needing restarts to recover the split tunnel.
 - PowerShell and netsh operations now have proper timeouts (SUBPROCESS_TIMEOUT / BATCH_TIMEOUT) to prevent the manager from hanging.
 
 ### Added
+- `--install-service` / `--uninstall-service` commands for systemd, launchd, and Windows NSSM, with `--service-name`, `--service-repo`, and `--service-python` overrides.
+- `RouteBackend.health_check()` implemented across backends and included in `--self-test` when privileged.
+- Native async subprocess paths for Linux/macOS route detection, route listing, add/remove operations, default-route removal, and interface checks.
+- Async PowerShell path for Windows VPN detection, route listing, and interface checks.
+- Watchdog circuit-breaker settings (`watchdog_failure_threshold`, `watchdog_circuit_breaker_seconds`) to avoid tight retry loops when platform detection keeps failing.
+- Optional `vpn_interface` config override for manual VPN interface/index selection.
+- Optional `persistent_routes` config flag; Windows/netsh creates persistent routes, while unsupported backends warn and keep active-session routes.
 - TUI now shows live progress while adding routes (`Adding routes... 142/387`).
 - Async netsh helper (`_async_netsh`) in Windows backend as foundation for full asyncio subprocess migration.
 
 ### Changed
+- `TunnelApp` now awaits backend async methods directly instead of calling backend I/O through `run_in_executor`.
+- Windows route add/remove/default operations now use the async netsh helper when called from the app.
+- Linux/macOS route subprocess calls have explicit timeout handling, including process kill on async timeout.
+- TUI route progress now includes percentage and an explicit progress row while large route operations are running.
+- `mypy` and `ruff` versions are pinned in dev dependencies to match the checked CI/tooling strictness.
+- `pytest-cov` is included in dev dependencies and pytest now reports coverage.
+- Added pure parser/scoring tests for Linux, macOS, and Windows backend detection logic.
 - **Major Windows performance improvement**: route add/remove/default operations switched from PowerShell (`New-NetRoute` etc.) to native `netsh` (much lighter and faster process spawning).
 - All HTTP requests now use dynamic `User-Agent: tunnel_manager/{version}`.
 - `detect_vpn` results are cached for 5 seconds to reduce expensive system calls (Get-NetRoute / netstat / ip route).

@@ -49,8 +49,7 @@ def _render(app, log_handler: InMemoryHandler):
     )
 
     updated_str = (
-        datetime.fromtimestamp(app.last_updated).strftime("%H:%M:%S")
-        if app.last_updated else "—"
+        datetime.fromtimestamp(app.last_updated).strftime("%H:%M:%S") if app.last_updated else "—"
     )
     next_refresh = ""
     if app.last_updated:
@@ -69,12 +68,23 @@ def _render(app, log_handler: InMemoryHandler):
         f"[dim]Updated: {updated_str}{next_refresh}[/]",
         f"[yellow]{app.status_line}[/]",
     )
+    if app.route_progress_total:
+        stats_table.add_row(
+            "[cyan]Route progress[/]",
+            (
+                f"[bold]{app.route_progress_done}/{app.route_progress_total}[/] "
+                f"[dim]({app.route_progress_percent}%)[/]"
+            ),
+            "",
+        )
     stats_panel = Panel(stats_table, title="[dim]Stats[/]", style="dim", padding=(0, 1))
 
     svc_table = Table(
-        box=box.SIMPLE_HEAD, show_header=True,
+        box=box.SIMPLE_HEAD,
+        show_header=True,
         header_style="bold #58a6ff",
-        row_styles=["", "dim"], padding=(0, 2),
+        row_styles=["", "dim"],
+        padding=(0, 2),
     )
     svc_table.add_column("Service", min_width=30)
     svc_table.add_column("Routes", justify="right", min_width=8)
@@ -94,9 +104,7 @@ def _render(app, log_handler: InMemoryHandler):
     return Group(header, stats_panel, svc_panel, log_panel)
 
 
-async def run_tui(
-    app, log_handler: InMemoryHandler, persist: bool = False
-) -> None:
+async def run_tui(app, log_handler: InMemoryHandler, persist: bool = False) -> None:
     with Live(
         _render(app, log_handler),
         refresh_per_second=2,
