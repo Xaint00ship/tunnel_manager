@@ -17,14 +17,18 @@ DB_ROUTES_URL = "http://localhost/api/routes"
 @dataclass
 class Config:
     list_url: str = "tunnel_list.txt"
-    list_source: str = "file"   # "file" or "db"
+    list_source: str = "file"  # "file" or "db"
     list_api_key: str | None = None  # X-Api-Key header when list_source == "db"
     list_sha256: str | None = None
     refresh_interval_hours: int = 24
     watchdog_interval_seconds: int = 15
     heartbeat_interval_seconds: int = 30
-    grey_api_url: str | None = None   # dashboard base URL for grey list reporting
-    grey_api_key: str | None = None   # X-Api-Key for /api/analytics/grey-list/report
+    watchdog_failure_threshold: int = 5
+    watchdog_circuit_breaker_seconds: int = 300
+    vpn_interface: str | None = None  # Optional manual VPN interface/index override.
+    persistent_routes: bool = False
+    grey_api_url: str | None = None  # dashboard base URL for grey list reporting
+    grey_api_key: str | None = None  # X-Api-Key for /api/analytics/grey-list/report
 
     def effective_list_url(self) -> str:
         """Return the URL/path to fetch the route list from."""
@@ -45,8 +49,7 @@ class Config:
             return cfg
         data = json.loads(path.read_text(encoding="utf-8"))
         known = {
-            k: v for k, v in data.items()
-            if k in cls.__dataclass_fields__ and not k.startswith("_")
+            k: v for k, v in data.items() if k in cls.__dataclass_fields__ and not k.startswith("_")
         }
         cfg = cls(**known)
         cfg._path = path
@@ -71,10 +74,8 @@ class Config:
 
     @staticmethod
     def _save(cfg: Config, path: Path) -> None:
-        d = {
-            k: v for k, v in asdict(cfg).items()
-            if not k.startswith("_")
-        }
+        d = {k: v for k, v in asdict(cfg).items() if not k.startswith("_")}
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
     @staticmethod
@@ -85,3 +86,7 @@ class Config:
             raise ValueError("watchdog_interval_seconds must be >= 5")
         if cfg.heartbeat_interval_seconds < 5:
             raise ValueError("heartbeat_interval_seconds must be >= 5")
+        if cfg.watchdog_failure_threshold < 1:
+            raise ValueError("watchdog_failure_threshold must be >= 1")
+        if cfg.watchdog_circuit_breaker_seconds < 0:
+            raise ValueError("watchdog_circuit_breaker_seconds must be >= 0")

@@ -1,7 +1,8 @@
 import os
+import time
 from pathlib import Path
 
-from tunnel_manager.state import StateFile
+from tunnel_manager.state import HEARTBEAT_TIMEOUT_SECONDS, StateFile
 
 
 def test_save_then_reload_preserves_fields(tmp_path: Path):
@@ -45,3 +46,17 @@ def test_pid_alive_rejects_zero_and_negative():
 def test_pid_alive_dead_pid():
     # 2^31 - 2 — extremely unlikely to be in use on any platform
     assert not StateFile.is_pid_alive(2_147_483_646)
+
+
+def test_another_instance_requires_fresh_heartbeat(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(StateFile, "is_pid_alive", staticmethod(lambda _pid: True))
+    s = StateFile(tmp_path / "state.json")
+
+    s.save(pid=12345)
+    assert not s.is_another_instance_alive()
+
+    s.save(heartbeat=int(time.time()))
+    assert s.is_another_instance_alive()
+
+    s.save(heartbeat=int(time.time()) - HEARTBEAT_TIMEOUT_SECONDS - 1)
+    assert not s.is_another_instance_alive()
