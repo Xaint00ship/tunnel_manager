@@ -13,6 +13,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      DEPLOY_READY: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_SSH_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +32,7 @@ jobs:
           pytest -q
 
       - name: Configure SSH
+        if: env.DEPLOY_READY == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
@@ -43,6 +46,7 @@ jobs:
           ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       - name: Upload manager
+        if: env.DEPLOY_READY == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
@@ -59,6 +63,7 @@ jobs:
             ./ "$DEPLOY_USER@$DEPLOY_HOST:/opt/tunnel_manager/"
 
       - name: Install and restart manager
+        if: env.DEPLOY_READY == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
@@ -86,3 +91,8 @@ jobs:
           sleep 8
           systemctl is-active tunnel-manager
           EOF
+
+      - name: Deployment skipped
+        if: env.DEPLOY_READY != 'true'
+        run: |
+          echo "Deployment skipped: set DEPLOY_HOST and DEPLOY_SSH_KEY repository secrets."
