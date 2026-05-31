@@ -19,6 +19,7 @@ class MockBackend(RouteBackend):
         self._vpn = vpn
         self._privileged = privileged
         self.routes: set[str] = set(existing or set())
+        self.blocked_routes: set[str] = set()
         self.add_failures = add_failures or {}
         self.calls: list[tuple[str, tuple]] = []
 
@@ -54,6 +55,16 @@ class MockBackend(RouteBackend):
         self.calls.append(("remove_routes", (tuple(entries), info.interface)))
         for e in entries:
             self.routes.discard(e if "/" in e else f"{e}/32")
+
+    def block_routes(self, entries: list[str]) -> None:
+        self.calls.append(("block_routes", (tuple(entries),)))
+        for e in entries:
+            self.blocked_routes.add(e if "/" in e else f"{e}/32")
+
+    def unblock_routes(self, entries: list[str]) -> None:
+        self.calls.append(("unblock_routes", (tuple(entries),)))
+        for e in entries:
+            self.blocked_routes.discard(e if "/" in e else f"{e}/32")
 
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         self.calls.append(("list_vpn_routes", (info.interface,)))

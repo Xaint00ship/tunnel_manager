@@ -88,6 +88,18 @@ class RouteBackend(ABC):
     async def remove_routes_async(self, entries: list[str], info: VPNInfo) -> None:
         await asyncio.to_thread(self.remove_routes, entries, info)
 
+    def block_routes(self, entries: list[str]) -> None:
+        """Install fail-closed blocks for routes that must not use the public default."""
+
+    def unblock_routes(self, entries: list[str]) -> None:
+        """Remove fail-closed blocks installed by block_routes."""
+
+    async def block_routes_async(self, entries: list[str]) -> None:
+        await asyncio.to_thread(self.block_routes, entries)
+
+    async def unblock_routes_async(self, entries: list[str]) -> None:
+        await asyncio.to_thread(self.unblock_routes, entries)
+
     async def list_vpn_routes_async(self, info: VPNInfo) -> list[str]:
         return await asyncio.to_thread(self.list_vpn_routes, info)
 

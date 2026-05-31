@@ -190,6 +190,38 @@ async def test_cleanup_uses_state_when_vpn_gone(make_app, tmp_path, mock_vpn):
 
 
 @pytest.mark.asyncio
+async def test_start_without_vpn_blocks_previous_routes(tmp_path, list_file):
+    state = StateFile(tmp_path / "state.json")
+    state.save(active_routes=["1.1.1.1/32", "2.2.2.0/24"], vpn_interface="50")
+    backend = MockBackend(vpn=None)
+    cfg = Config(list_url=str(list_file))
+    app = TunnelApp(backend, cfg, state, tmp_path)
+
+    await app.start()
+
+    assert app.vpn_connected is False
+    assert backend.blocked_routes == {"1.1.1.1/32", "2.2.2.0/24"}
+
+
+@pytest.mark.asyncio
+async def test_reconnect_unblocks_fail_closed_routes(tmp_path, list_file, mock_vpn):
+    state = StateFile(tmp_path / "state.json")
+    state.save(active_routes=["1.1.1.1/32"], vpn_interface="50")
+    backend = MockBackend(vpn=None)
+    cfg = Config(list_url=str(list_file))
+    app = TunnelApp(backend, cfg, state, tmp_path)
+
+    await app.start()
+    backend.set_vpn(mock_vpn)
+    app.vpn_info = mock_vpn
+    app.vpn_connected = True
+    await app._setup_tunnel(force_apply=True)
+
+    assert backend.blocked_routes == set()
+    assert any(call[0] == "unblock_routes" for call in backend.calls)
+
+
+@pytest.mark.asyncio
 async def test_failure_aggregation_groups_messages(make_app, mock_vpn, tmp_path, list_file):
     backend = MockBackend(
         vpn=mock_vpn,
