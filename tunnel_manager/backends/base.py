@@ -90,11 +90,11 @@ class RouteBackend(ABC):
 
     def block_routes(self, entries: list[str]) -> None:
         """Install fail-closed blocks for routes that must not use the public default."""
-        pass
+        _ = entries
 
     def unblock_routes(self, entries: list[str]) -> None:
         """Remove fail-closed blocks installed by block_routes."""
-        pass
+        _ = entries
 
     async def block_routes_async(self, entries: list[str]) -> None:
         await asyncio.to_thread(self.block_routes, entries)

@@ -39,7 +39,7 @@ def test_load_ignores_unknown_fields(tmp_path: Path):
 
 def test_validation_rejects_bad_values(tmp_path: Path):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"watchdog_interval_seconds": 1}))
+    p.write_text(json.dumps({"watchdog_interval_seconds": 0}))
     with pytest.raises(ValueError, match="watchdog"):
         Config.load(p)
 
