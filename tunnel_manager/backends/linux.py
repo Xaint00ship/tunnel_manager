@@ -294,6 +294,46 @@ class LinuxBackend(RouteBackend):
             cmds = [f"route del {self._normalize(e)} dev {info.interface}" for e in group]
             await self._sudo_ip_batch_async(fam, cmds)
 
+    def block_routes(self, entries: list[str]) -> None:
+        if not entries:
+            return
+        v4, v6 = self._split_by_family(entries)
+        for fam, group in (("-4", v4), ("-6", v6)):
+            if not group:
+                continue
+            cmds = [f"route replace blackhole {self._normalize(e)}" for e in group]
+            self._sudo_ip_batch(fam, cmds)
+
+    async def block_routes_async(self, entries: list[str]) -> None:
+        if not entries:
+            return
+        v4, v6 = self._split_by_family(entries)
+        for fam, group in (("-4", v4), ("-6", v6)):
+            if not group:
+                continue
+            cmds = [f"route replace blackhole {self._normalize(e)}" for e in group]
+            await self._sudo_ip_batch_async(fam, cmds)
+
+    def unblock_routes(self, entries: list[str]) -> None:
+        if not entries:
+            return
+        v4, v6 = self._split_by_family(entries)
+        for fam, group in (("-4", v4), ("-6", v6)):
+            if not group:
+                continue
+            cmds = [f"route del blackhole {self._normalize(e)}" for e in group]
+            self._sudo_ip_batch(fam, cmds)
+
+    async def unblock_routes_async(self, entries: list[str]) -> None:
+        if not entries:
+            return
+        v4, v6 = self._split_by_family(entries)
+        for fam, group in (("-4", v4), ("-6", v6)):
+            if not group:
+                continue
+            cmds = [f"route del blackhole {self._normalize(e)}" for e in group]
+            await self._sudo_ip_batch_async(fam, cmds)
+
     def is_interface_up(self, iface: str) -> bool:
         try:
             out = subprocess.check_output(

@@ -21,10 +21,11 @@ class Config:
     list_api_key: str | None = None  # X-Api-Key header when list_source == "db"
     list_sha256: str | None = None
     refresh_interval_hours: int = 24
-    watchdog_interval_seconds: int = 15
+    watchdog_interval_seconds: int = 2
     heartbeat_interval_seconds: int = 30
     watchdog_failure_threshold: int = 5
     watchdog_circuit_breaker_seconds: int = 300
+    fail_closed_routes: bool = True
     vpn_interface: str | None = None  # Optional manual VPN interface/index override.
     persistent_routes: bool = False
     grey_api_url: str | None = None  # dashboard base URL for grey list reporting
@@ -82,8 +83,8 @@ class Config:
     def _validate(cfg: Config) -> None:
         if cfg.refresh_interval_hours < 0:
             raise ValueError("refresh_interval_hours must be >= 0")
-        if cfg.watchdog_interval_seconds < 5:
-            raise ValueError("watchdog_interval_seconds must be >= 5")
+        if cfg.watchdog_interval_seconds < 1:
+            raise ValueError("watchdog_interval_seconds must be >= 1")
         if cfg.heartbeat_interval_seconds < 5:
             raise ValueError("heartbeat_interval_seconds must be >= 5")
         if cfg.watchdog_failure_threshold < 1:
