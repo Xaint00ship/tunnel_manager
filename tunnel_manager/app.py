@@ -92,6 +92,7 @@ class TunnelApp:
         self._detect_failures: int = 0
         self._watchdog_circuit_until: float = 0.0
         self._persistent_warning_logged = False
+        self._routes_blocked = False
 
     async def _detect_vpn(self) -> VPNInfo | None:
         now = time.time()
@@ -132,6 +133,7 @@ class TunnelApp:
             self.log.warning("VPN not detected. Watchdog will pick it up on reconnect.")
             self.status_line = "VPN disconnected"
             self.vpn_connected = False
+            await self._block_routes_fail_closed("startup without VPN")
         else:
             self.vpn_info = info
             self.vpn_connected = True
@@ -235,6 +237,7 @@ class TunnelApp:
 
         added_total = failed_total = 0
         if new:
+            await self._unblock_routes_fail_closed(new)
             self.log.info(f"Adding {len(new)} routes...")
             self.status_line = f"Adding routes... 0/{len(new)} (0%)"
             new_list = list(new)
@@ -282,6 +285,30 @@ class TunnelApp:
             vpn_backend=self.backend.name(),
             list_etag=new_etag,
         )
+
+    def _routes_for_fail_closed(self) -> list[str]:
+        return sorted(self.active_routes or set(self.state.previous_routes()))
+
+    async def _block_routes_fail_closed(self, reason: str) -> None:
+        if not self.config.fail_closed_routes or self.dry_run:
+            return
+        routes = self._routes_for_fail_closed()
+        if not routes:
+            return
+        self.log.warning(f"Fail-closed: blocking {len(routes)} routes ({reason}).")
+        await self.backend.block_routes_async(routes)
+        self._routes_blocked = True
+
+    async def _unblock_routes_fail_closed(self, routes: set[str] | list[str] | None = None) -> None:
+        if not self.config.fail_closed_routes or self.dry_run:
+            return
+        to_unblock = sorted(routes or self._routes_for_fail_closed())
+        if not to_unblock:
+            return
+        await self.backend.unblock_routes_async(to_unblock)
+        if self._routes_blocked:
+            self.log.info(f"Fail-closed: unblocked {len(to_unblock)} routes.")
+        self._routes_blocked = False
 
     async def _probe_and_report(self, routes: list[str]) -> None:
         """Probe newly added routes via HTTP; report non-200 to grey list."""
@@ -363,6 +390,7 @@ class TunnelApp:
                 self.vpn_info = info
                 self.vpn_connected = True
                 self.log.info("VPN reconnected — rebuilding tunnel...")
+                await self._unblock_routes_fail_closed()
                 await self._setup_tunnel(force_apply=True)
             elif not connected and was:
                 if self.vpn_info:
@@ -372,6 +400,7 @@ class TunnelApp:
                 self.vpn_connected = False
                 self.status_line = "VPN disconnected"
                 self.log.warning("VPN disconnected.")
+                await self._block_routes_fail_closed("VPN disconnected")
 
     async def worker_heartbeat(self) -> None:
         while self.running:
@@ -404,6 +433,7 @@ class TunnelApp:
             self.log.info(f"[dry-run] would remove {len(routes)} routes")
             return
         self.log.info(f"Removing {len(routes)} routes...")
+        await self._unblock_routes_fail_closed(routes)
         await self.backend.remove_routes_async(routes, self.vpn_info)
         self.state.clear()
         self.log.info("Cleanup complete.")
