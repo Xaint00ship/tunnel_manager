@@ -6,6 +6,7 @@ Falls back to ~/.tunnel_manager when platformdirs is unavailable.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -19,15 +20,27 @@ try:
         user_state_dir,
     )
 
-    STATE_DIR = Path(user_state_dir("tunnel_manager", appauthor=False))
-    LOG_DIR = Path(user_log_dir("tunnel_manager", appauthor=False))
-    USER_CONFIG_DIR = Path(user_config_dir("tunnel_manager", appauthor=False))
-    USER_DATA_DIR = Path(user_data_dir("tunnel_manager", appauthor=False))
+    STATE_DIR = Path(
+        os.getenv("TUNNEL_MANAGER_STATE_DIR")
+        or user_state_dir("tunnel_manager", appauthor=False)
+    )
+    LOG_DIR = Path(
+        os.getenv("TUNNEL_MANAGER_LOG_DIR")
+        or user_log_dir("tunnel_manager", appauthor=False)
+    )
+    USER_CONFIG_DIR = Path(
+        os.getenv("TUNNEL_MANAGER_CONFIG_DIR")
+        or user_config_dir("tunnel_manager", appauthor=False)
+    )
+    USER_DATA_DIR = Path(
+        os.getenv("TUNNEL_MANAGER_DATA_DIR")
+        or user_data_dir("tunnel_manager", appauthor=False)
+    )
 except ImportError:  # pragma: no cover — fallback when platformdirs missing
-    STATE_DIR = Path.home() / ".tunnel_manager"
-    LOG_DIR = STATE_DIR
-    USER_CONFIG_DIR = STATE_DIR
-    USER_DATA_DIR = STATE_DIR
+    STATE_DIR = Path(os.getenv("TUNNEL_MANAGER_STATE_DIR") or Path.home() / ".tunnel_manager")
+    LOG_DIR = Path(os.getenv("TUNNEL_MANAGER_LOG_DIR") or STATE_DIR)
+    USER_CONFIG_DIR = Path(os.getenv("TUNNEL_MANAGER_CONFIG_DIR") or STATE_DIR)
+    USER_DATA_DIR = Path(os.getenv("TUNNEL_MANAGER_DATA_DIR") or STATE_DIR)
 
 LOG_FILE = LOG_DIR / "tunnel.log"
 STATE_FILE = STATE_DIR / "state.json"

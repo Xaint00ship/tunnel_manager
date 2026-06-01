@@ -90,9 +90,16 @@ class RouteBackend(ABC):
 
     def block_routes(self, entries: list[str]) -> None:
         """Install fail-closed blocks for routes that must not use the public default."""
+        _ = entries
 
     def unblock_routes(self, entries: list[str]) -> None:
         """Remove fail-closed blocks installed by block_routes."""
+        _ = entries
+
+    def has_default_vpn_route(self, info: VPNInfo) -> bool:
+        """Return True when a catch-all default currently points at the VPN."""
+        _ = info
+        return False
 
     async def block_routes_async(self, entries: list[str]) -> None:
         await asyncio.to_thread(self.block_routes, entries)
@@ -105,3 +112,6 @@ class RouteBackend(ABC):
 
     async def is_interface_up_async(self, iface: str) -> bool:
         return await asyncio.to_thread(self.is_interface_up, iface)
+
+    async def has_default_vpn_route_async(self, info: VPNInfo) -> bool:
+        return await asyncio.to_thread(self.has_default_vpn_route, info)

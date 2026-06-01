@@ -38,6 +38,8 @@ def test_version_prints():
 
 def test_status_with_no_state_runs_clean(tmp_path, monkeypatch):
     # Force STATE_DIR to tmp_path so we don't pick up real state.
+    monkeypatch.setenv("TUNNEL_MANAGER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("TUNNEL_MANAGER_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setenv("APPDATA", str(tmp_path))
     r = _run("--status")
