@@ -93,6 +93,7 @@ class TunnelApp:
         self._watchdog_circuit_until: float = 0.0
         self._persistent_warning_logged = False
         self._routes_blocked = False
+        self._configured_interface_down_logged = False
 
     @staticmethod
     def _norm_route(entry: str) -> str:
@@ -100,15 +101,30 @@ class TunnelApp:
             return entry
         return f"{entry}/32" if ":" not in entry else f"{entry}/128"
 
+    async def _validate_configured_interface(self, info: VPNInfo | None) -> VPNInfo | None:
+        if info is None or not self.config.vpn_interface:
+            self._configured_interface_down_logged = False
+            return info
+        if await self.backend.is_interface_up_async(info.interface):
+            self._configured_interface_down_logged = False
+            return info
+        if not self._configured_interface_down_logged:
+            self.log.warning(
+                f"Configured VPN interface {info.interface} is not up; treating VPN as disconnected."
+            )
+            self._configured_interface_down_logged = True
+        return None
+
     async def _detect_vpn(self) -> VPNInfo | None:
         now = time.time()
         if now - self._last_detect < 5 and self._last_vpn_info is not None:
             self._apply_configured_vpn_options(self._last_vpn_info)
-            return self._last_vpn_info
+            return await self._validate_configured_interface(self._last_vpn_info)
         info = await self.backend.detect_vpn_async()
         if info is not None:
             self._apply_configured_vpn_options(info)
         self._last_detect = now
+        info = await self._validate_configured_interface(info)
         self._last_vpn_info = info
         return info
 
