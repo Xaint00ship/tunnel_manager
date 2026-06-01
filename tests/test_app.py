@@ -178,6 +178,21 @@ async def test_configured_vpn_interface_overrides_detected_interface(tmp_path, l
 
 
 @pytest.mark.asyncio
+async def test_configured_vpn_interface_must_be_up(tmp_path, list_file, mock_vpn):
+    backend = MockBackend(vpn=mock_vpn)
+    backend.interface_up = False
+    cfg = Config(list_url=str(list_file), vpn_interface="ipsec0")
+    state = StateFile(tmp_path / "state.json")
+    app = TunnelApp(backend, cfg, state, tmp_path)
+
+    await app.start()
+
+    assert app.vpn_connected is False
+    assert app.status_line == "VPN disconnected"
+    assert not any(call[0] == "add_routes" for call in backend.calls)
+
+
+@pytest.mark.asyncio
 async def test_setup_can_be_cancelled_during_route_add(make_app, mock_vpn):
     class SlowAddBackend(MockBackend):
         async def add_routes_async(self, entries, info):

@@ -21,6 +21,7 @@ class MockBackend(RouteBackend):
         self.routes: set[str] = set(existing or set())
         self.blocked_routes: set[str] = set()
         self.default_vpn_route = False
+        self.interface_up = True
         self.add_failures = add_failures or {}
         self.calls: list[tuple[str, tuple]] = []
 
@@ -75,3 +76,7 @@ class MockBackend(RouteBackend):
     def has_default_vpn_route(self, info: VPNInfo) -> bool:
         self.calls.append(("has_default_vpn_route", (info.interface,)))
         return self.default_vpn_route
+
+    def is_interface_up(self, iface: str) -> bool:
+        self.calls.append(("is_interface_up", (iface,)))
+        return self.interface_up
