@@ -94,6 +94,12 @@ class TunnelApp:
         self._persistent_warning_logged = False
         self._routes_blocked = False
 
+    @staticmethod
+    def _norm_route(entry: str) -> str:
+        if "/" in entry:
+            return entry
+        return f"{entry}/32" if ":" not in entry else f"{entry}/128"
+
     async def _detect_vpn(self) -> VPNInfo | None:
         now = time.time()
         if now - self._last_detect < 5 and self._last_vpn_info is not None:
@@ -216,17 +222,12 @@ class TunnelApp:
             existing = set()
         prev = set(self.state.previous_routes())
 
-        def norm(e: str) -> str:
-            if "/" in e:
-                return e
-            return f"{e}/32" if ":" not in e else f"{e}/128"
-
-        existing_norm = {norm(e) for e in existing}
-        prev_norm = {norm(e) for e in prev}
-        desired_norm = {norm(e) for e in desired}
+        existing_norm = {self._norm_route(e) for e in existing}
+        prev_norm = {self._norm_route(e) for e in prev}
+        desired_norm = {self._norm_route(e) for e in desired}
 
         stale = (existing_norm | prev_norm) - desired_norm
-        new = {e for e in desired if norm(e) not in existing_norm}
+        new = {e for e in desired if self._norm_route(e) not in existing_norm}
 
         if stale:
             self.log.info(f"Removing {len(stale)} stale routes...")
@@ -348,6 +349,33 @@ class TunnelApp:
 
     # ── workers ─────────────────────────────────────────────────────────
 
+    async def _repair_route_drift(self) -> bool:
+        if self.vpn_info is None:
+            return False
+        desired = {self._norm_route(e) for e in (self.active_routes or set(self.state.previous_routes()))}
+        if not desired:
+            return False
+        try:
+            existing = {
+                self._norm_route(e)
+                for e in await self.backend.list_vpn_routes_async(self.vpn_info)
+            }
+            default_on_vpn = await self.backend.has_default_vpn_route_async(self.vpn_info)
+        except Exception as e:
+            self.log.debug(f"route drift check failed: {e}")
+            return False
+        missing = desired - existing
+        if not missing and not default_on_vpn:
+            return False
+        reasons: list[str] = []
+        if missing:
+            reasons.append(f"{len(missing)} missing routes")
+        if default_on_vpn:
+            reasons.append("catch-all default route")
+        self.log.warning(f"Route drift detected ({', '.join(reasons)}); repairing tunnel.")
+        await self._setup_tunnel(force_apply=True)
+        return True
+
     async def worker_refresh(self) -> None:
         while self.running:
             interval = max(60, self.config.refresh_interval_hours * 3600)
@@ -392,6 +420,9 @@ class TunnelApp:
                 self.log.info("VPN reconnected — rebuilding tunnel...")
                 await self._unblock_routes_fail_closed()
                 await self._setup_tunnel(force_apply=True)
+            elif connected and was:
+                self.vpn_info = info
+                await self._repair_route_drift()
             elif not connected and was:
                 if self.vpn_info:
                     iface = self.vpn_info.interface
