@@ -20,6 +20,7 @@ class MockBackend(RouteBackend):
         self._privileged = privileged
         self.routes: set[str] = set(existing or set())
         self.blocked_routes: set[str] = set()
+        self.default_vpn_route = False
         self.add_failures = add_failures or {}
         self.calls: list[tuple[str, tuple]] = []
 
@@ -38,6 +39,7 @@ class MockBackend(RouteBackend):
 
     def remove_default_vpn_route(self, info: VPNInfo) -> None:
         self.calls.append(("remove_default_vpn_route", (info.interface,)))
+        self.default_vpn_route = False
 
     def add_routes(self, entries: list[str], info: VPNInfo) -> AddResult:
         self.calls.append(("add_routes", (tuple(entries), info.interface)))
@@ -69,3 +71,7 @@ class MockBackend(RouteBackend):
     def list_vpn_routes(self, info: VPNInfo) -> list[str]:
         self.calls.append(("list_vpn_routes", (info.interface,)))
         return sorted(self.routes)
+
+    def has_default_vpn_route(self, info: VPNInfo) -> bool:
+        self.calls.append(("has_default_vpn_route", (info.interface,)))
+        return self.default_vpn_route

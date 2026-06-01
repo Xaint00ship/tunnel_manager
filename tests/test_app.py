@@ -125,6 +125,34 @@ async def test_force_apply_reuses_cached_list_on_304(monkeypatch, tmp_path, mock
 
 
 @pytest.mark.asyncio
+async def test_route_drift_repair_reapplies_missing_routes(make_app, mock_backend):
+    app = make_app()
+    await app.start()
+    mock_backend.calls.clear()
+    mock_backend.routes.clear()
+
+    repaired = await app._repair_route_drift()
+
+    assert repaired is True
+    assert {"1.1.1.1/32", "2.2.2.0/24", "3.3.3.3/32"} <= mock_backend.routes
+    assert any(call[0] == "add_routes" for call in mock_backend.calls)
+
+
+@pytest.mark.asyncio
+async def test_route_drift_repair_removes_default_route(make_app, mock_backend):
+    app = make_app()
+    await app.start()
+    mock_backend.calls.clear()
+    mock_backend.default_vpn_route = True
+
+    repaired = await app._repair_route_drift()
+
+    assert repaired is True
+    assert mock_backend.default_vpn_route is False
+    assert any(call[0] == "remove_default_vpn_route" for call in mock_backend.calls)
+
+
+@pytest.mark.asyncio
 async def test_state_persists_after_setup(make_app, tmp_path):
     app = make_app()
     await app.start()

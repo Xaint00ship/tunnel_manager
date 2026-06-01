@@ -201,6 +201,27 @@ class LinuxBackend(RouteBackend):
         if info.local_gateway:
             await self._sudo_ip_async("-4", ["route", "add", "default", "via", info.local_gateway])
 
+    def has_default_vpn_route(self, info: VPNInfo) -> bool:
+        for fam in ("-4", "-6"):
+            try:
+                out = subprocess.check_output(
+                    ["ip", fam, "route", "show", "default", "dev", info.interface],
+                    text=True,
+                    timeout=SUBPROCESS_TIMEOUT,
+                )
+            except subprocess.CalledProcessError:
+                continue
+            if out.strip():
+                return True
+        return False
+
+    async def has_default_vpn_route_async(self, info: VPNInfo) -> bool:
+        for fam in ("-4", "-6"):
+            r = await self._run_async(["ip", fam, "route", "show", "default", "dev", info.interface])
+            if r.returncode == 0 and r.stdout.strip():
+                return True
+        return False
+
     # ── add/remove ─────────────────────────────────────────────────────
 
     def _split_by_family(self, entries: list[str]) -> tuple[list[str], list[str]]:
